@@ -1,20 +1,22 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { toPng } from "html-to-image";
 
 // --- 型定義 ---
 type GameMode = "score" | "win-loss";
 type Player = { id: string; name: string };
 type MatchResult = {
-  scoreA: number | null; // A(キーの前側)のスコア
-  scoreB: number | null; // B(キーの後側)のスコア
+  scoreA: number | null; 
+  scoreB: number | null; 
 };
-type MatchKey = string; // "playerIdA-playerIdB" (常に indexが小さい方-大きい方 で管理)
+type MatchKey = string; 
 
 export default function LeagueApp() {
   // --- 状態管理 ---
+  const [isLoaded, setIsLoaded] = useState(false); // 保存データ読み込み完了フラグ
   const [phase, setPhase] = useState<"settings" | "register" | "match">("settings");
+  const [title, setTitle] = useState("総当たりリーグ戦アプリ");
   const [mode, setMode] = useState<GameMode>("score");
   const [allowDraw, setAllowDraw] = useState(true);
   const [players, setPlayers] = useState<Player[]>([]);
@@ -22,6 +24,33 @@ export default function LeagueApp() {
   const [matches, setMatches] = useState<Record<MatchKey, MatchResult>>({});
   
   const tableRef = useRef<HTMLDivElement>(null);
+
+  // --- ★追加機能: データのロード (初回のみ) ---
+  useEffect(() => {
+    const savedData = localStorage.getItem("league-app-data");
+    if (savedData) {
+      try {
+        const parsed = JSON.parse(savedData);
+        setTitle(parsed.title || "総当たりリーグ戦アプリ");
+        setMode(parsed.mode || "score");
+        setAllowDraw(parsed.allowDraw ?? true);
+        setPlayers(parsed.players || []);
+        setMatches(parsed.matches || {});
+        setPhase(parsed.phase || "settings");
+      } catch (e) {
+        console.error("保存データの読み込みに失敗しました", e);
+      }
+    }
+    setIsLoaded(true);
+  }, []);
+
+  // --- ★追加機能: データの自動保存 (変更があるたび) ---
+  useEffect(() => {
+    if (!isLoaded) return; // ロード前は保存しない
+    const data = { title, mode, allowDraw, players, matches, phase };
+    localStorage.setItem("league-app-data", JSON.stringify(data));
+  }, [title, mode, allowDraw, players, matches, phase, isLoaded]);
+
 
   // --- 1. 参加者登録ロジック ---
   const addPlayer = () => {
@@ -35,45 +64,27 @@ export default function LeagueApp() {
     setPlayers(players.filter((p) => p.id !== id));
   };
 
-  // --- 2. 試合結果更新ロジック (双方向対応版) ---
-  
-  // 勝敗モード用
-  // isReversed: 下側からの入力ならtrue (スコアを逆にして保存する)
+  // --- 2. 試合結果更新ロジック ---
   const updateMatchWinLoss = (p1: string, p2: string, myScore: number, oppScore: number, isReversed: boolean) => {
-    // 常に「indexが小さい順」などの一意なキーに合わせるため、呼び出し元でp1, p2の順序は固定されている前提
-    // isReversed=trueの場合、入力されたのは「下側(p2)の勝ち負け」なので、データ(p1-p2)としては逆にする
-    
     const key = `${p1}-${p2}`;
-    
-    // データとして保存すべき値
     const scoreA = isReversed ? oppScore : myScore;
     const scoreB = isReversed ? myScore : oppScore;
 
-    setMatches(prev => ({
-        ...prev,
-        [key]: { scoreA, scoreB }
-    }));
+    setMatches(prev => ({ ...prev, [key]: { scoreA, scoreB } }));
   };
 
-  // スコアモード用
   const updateMatchScore = (p1: string, p2: string, isMyScore: boolean, value: string, isReversed: boolean) => {
     const key = `${p1}-${p2}`;
     let val: number | null = value === "" ? null : Number(value);
 
     setMatches(prev => {
         const current = prev[key] || { scoreA: null, scoreB: null };
-        
-        // どちらのスコアを更新しようとしているか判定
         let targetField: "scoreA" | "scoreB";
-
         if (!isReversed) {
-            // 上側(正位置): myScore=A, oppScore=B
             targetField = isMyScore ? "scoreA" : "scoreB";
         } else {
-            // 下側(逆位置): myScore=B, oppScore=A
             targetField = isMyScore ? "scoreB" : "scoreA";
         }
-
         const updated = { ...current, [targetField]: val };
         return { ...prev, [key]: updated };
     });
@@ -82,66 +93,38 @@ export default function LeagueApp() {
   // --- 3. 集計・順位付けロジック ---
   const calculateStats = useCallback(() => {
     const stats = players.map((player) => {
-      let wins = 0;
-      let losses = 0;
-      let draws = 0;
-      let goalsFor = 0;
-      let goalsAgainst = 0;
+      let wins = 0, losses = 0, draws = 0, goalsFor = 0, goalsAgainst = 0;
 
       players.forEach((opponent) => {
         if (player.id === opponent.id) return;
-        
-        // データが存在する可能性のあるキーを探す（一方向のみで管理されていると仮定せず両方探す）
-        // ※今回の実装では i<j の順で保存されるが、念のため両方向チェックは安全策
         const key1 = `${player.id}-${opponent.id}`;
         const key2 = `${opponent.id}-${player.id}`;
-        
         let sA: number | null = null;
         let sB: number | null = null;
 
-        // 自分がA側(key1)の場合
         if (matches[key1]) {
-          sA = matches[key1].scoreA;
-          sB = matches[key1].scoreB;
-        } 
-        // 自分がB側(key2)の場合、スコアを読み替える
-        else if (matches[key2]) {
-          sA = matches[key2].scoreB; // 自分のスコア
-          sB = matches[key2].scoreA; // 相手のスコア
+          sA = matches[key1].scoreA; sB = matches[key1].scoreB;
+        } else if (matches[key2]) {
+          sA = matches[key2].scoreB; sB = matches[key2].scoreA;
         }
 
         if (sA !== null && sB !== null) {
           if (mode === "score") {
-            goalsFor += sA;
-            goalsAgainst += sB;
-            if (sA > sB) wins++;
-            else if (sA < sB) losses++;
-            else draws++;
+            goalsFor += sA; goalsAgainst += sB;
+            if (sA > sB) wins++; else if (sA < sB) losses++; else draws++;
           } else {
-            // 勝敗モード: 1=勝, 0=負
-            if (sA === 1) wins++;
-            else if (sA === 0 && sB === 1) losses++;
-            else if (sA === 0.5) draws++;
+            if (sA === 1) wins++; else if (sA === 0 && sB === 1) losses++; else if (sA === 0.5) draws++;
           }
         }
       });
 
-      return {
-        ...player,
-        wins,
-        losses,
-        draws,
-        goalsFor,
-        goalDiff: goalsFor - goalsAgainst,
-      };
+      return { ...player, wins, losses, draws, goalsFor, goalDiff: goalsFor - goalsAgainst };
     });
 
-    // ソート実行
     return stats.sort((a, b) => {
       if (a.wins !== b.wins) return b.wins - a.wins;
       if (mode === "score" && a.losses !== b.losses) return a.losses - b.losses;
-
-      // 直接対決
+      
       const keyDirect = `${a.id}-${b.id}`;
       const matchDirect = matches[keyDirect] || matches[`${b.id}-${a.id}`];
       if (matchDirect) {
@@ -151,8 +134,7 @@ export default function LeagueApp() {
                  if (mA.scoreA > mA.scoreB) return -1;
                  if (mA.scoreB > mA.scoreA) return 1;
             }
-          } 
-          else if (matches[`${b.id}-${a.id}`]) {
+          } else if (matches[`${b.id}-${a.id}`]) {
              const mB = matches[`${b.id}-${a.id}`];
              if (mB.scoreA !== null && mB.scoreB !== null) {
                  if (mB.scoreB > mB.scoreA) return -1;
@@ -169,24 +151,62 @@ export default function LeagueApp() {
 
   const rankedPlayers = calculateStats();
   const hasMatches = Object.values(matches).some(m => m.scoreA !== null);
-  const winner = hasMatches && rankedPlayers.length > 0 ? rankedPlayers[0] : null;
 
   const saveImage = () => {
     if (tableRef.current === null) return;
     toPng(tableRef.current, { cacheBust: true, backgroundColor: '#ffffff' })
       .then((dataUrl) => {
         const link = document.createElement("a");
-        link.download = "league-result.png";
+        link.download = `${title || "league-result"}.png`;
         link.href = dataUrl;
         link.click();
       })
       .catch((err) => console.error(err));
   };
 
+  // --- ★追加機能: テキストコピー ---
+  const copyToClipboard = () => {
+    let text = `【${title}】結果\n\n`;
+    rankedPlayers.forEach((p, i) => {
+        const rank = i + 1;
+        const icon = rank === 1 && hasMatches ? "👑 " : "";
+        let line = `${rank}位: ${icon}${p.name} / ${p.wins}勝${p.losses}敗`;
+        if (allowDraw) line += `${p.draws}分`;
+        if (mode === "score") line += ` (得失点:${p.goalDiff > 0 ? "+" : ""}${p.goalDiff})`;
+        text += line + "\n";
+    });
+    
+    navigator.clipboard.writeText(text).then(() => {
+        alert("結果をコピーしました！");
+    }).catch(err => {
+        console.error("コピー失敗:", err);
+    });
+  };
+
+  // --- データ削除機能（リセット用） ---
+  const resetData = () => {
+    if(!confirm("本当に全てのデータを削除して最初に戻りますか？")) return;
+    localStorage.removeItem("league-app-data");
+    window.location.reload();
+  };
+
+  // ロード完了までは何も表示しない（画面チラつき防止）
+  if (!isLoaded) return <div className="p-8 text-center">読み込み中...</div>;
+
   return (
     <div className="min-h-screen p-8 bg-gray-50 text-gray-800 font-sans">
       <div className="max-w-4xl mx-auto bg-white p-6 rounded-xl shadow-lg">
-        <h1 className="text-2xl font-bold mb-6 text-center border-b pb-4">総当たりリーグ戦アプリ</h1>
+        <div className="border-b pb-4 mb-6 flex justify-between items-center">
+            <input 
+                type="text" 
+                value={title} 
+                onChange={(e) => setTitle(e.target.value)}
+                className="flex-1 text-2xl font-bold text-center border-none focus:ring-2 focus:ring-blue-300 rounded p-1 mx-4"
+                placeholder="タイトルを入力"
+            />
+            {/* リセットボタン */}
+            <button onClick={resetData} className="text-xs text-red-400 hover:text-red-600 whitespace-nowrap">全削除</button>
+        </div>
 
         {phase === "settings" && (
           <div className="space-y-6">
@@ -196,15 +216,15 @@ export default function LeagueApp() {
                 <label className="flex items-center gap-2 cursor-pointer border p-4 rounded-lg has-[:checked]:bg-blue-50 has-[:checked]:border-blue-500">
                   <input type="radio" checked={mode === "score"} onChange={() => setMode("score")} />
                   <div>
-                    <div className="font-bold">スコア入力式 (A案)</div>
-                    <div className="text-sm text-gray-500">得点数を入力。得失点差などが順位に影響。</div>
+                    <div className="font-bold">スコア入力式</div>
+                    <div className="text-sm text-gray-500">得点数を入力</div>
                   </div>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer border p-4 rounded-lg has-[:checked]:bg-blue-50 has-[:checked]:border-blue-500">
                   <input type="radio" checked={mode === "win-loss"} onChange={() => setMode("win-loss")} />
                   <div>
-                    <div className="font-bold">勝敗のみ (B案)</div>
-                    <div className="text-sm text-gray-500">勝ち・負けのみ記録。シンプル。</div>
+                    <div className="font-bold">勝敗のみ</div>
+                    <div className="text-sm text-gray-500">勝ち・負けのみ</div>
                   </div>
                 </label>
               </div>
@@ -254,20 +274,29 @@ export default function LeagueApp() {
 
         {phase === "match" && (
           <div className="space-y-8">
-            <div className="flex justify-between items-center print:hidden">
+            {/* 操作ボタンエリア */}
+            <div className="flex flex-wrap gap-2 justify-between items-center print:hidden">
                 <button onClick={() => setPhase("register")} className="text-sm text-gray-500 underline">← メンバー変更に戻る</button>
-                <button onClick={saveImage} className="bg-indigo-600 text-white px-4 py-2 rounded shadow">画像として保存</button>
+                <div className="flex gap-2">
+                    {/* ★追加: テキストコピーボタン */}
+                    <button onClick={copyToClipboard} className="bg-gray-600 text-white px-4 py-2 rounded shadow hover:bg-gray-700">
+                        結果をコピー
+                    </button>
+                    <button onClick={saveImage} className="bg-indigo-600 text-white px-4 py-2 rounded shadow hover:bg-indigo-700">
+                        画像として保存
+                    </button>
+                </div>
             </div>
 
             <div ref={tableRef} className="p-4 bg-white">
-                <h2 className="text-center font-bold text-xl mb-4">対戦結果表</h2>
+                <h2 className="text-center font-bold text-2xl mb-4 break-words">{title}</h2>
                 
                 <div className="overflow-x-auto mb-8">
                   <table className="w-full border-collapse border border-gray-300 text-sm md:text-base">
                     <thead>
                       <tr>
                         <th className="border p-2 bg-gray-100"></th>
-                        {players.map(p => <th key={p.id} className="border p-2 bg-gray-50">{p.name}</th>)}
+                        {players.map(p => <th key={p.id} className="border p-2 bg-gray-50 min-w-[60px]">{p.name}</th>)}
                       </tr>
                     </thead>
                     <tbody>
@@ -275,19 +304,14 @@ export default function LeagueApp() {
                         <tr key={rowPlayer.id}>
                           <th className="border p-2 bg-gray-50">{rowPlayer.name}</th>
                           {players.map((colPlayer, j) => {
-                            // 対角線（自分自身）
                             if (i === j) return <td key={colPlayer.id} className="border p-2 bg-gray-300"></td>;
                             
-                            // データの正規化: 常にindexが小さい方を p1(データ主), 大きい方を p2(データ従) とする
-                            // isReversed: 今描画しているセルが「逆視点（下側）」かどうか
                             const isReversed = i > j;
                             const p1 = isReversed ? colPlayer : rowPlayer;
                             const p2 = isReversed ? rowPlayer : colPlayer;
                             
                             const key = `${p1.id}-${p2.id}`;
                             const res = matches[key] || { scoreA: null, scoreB: null };
-
-                            // 表示用に値を整える（ReversedならAとBを入れ替える）
                             const myScore = isReversed ? res.scoreB : res.scoreA;
                             const oppScore = isReversed ? res.scoreA : res.scoreB;
 
@@ -299,7 +323,6 @@ export default function LeagueApp() {
                                       type="number" 
                                       className="w-10 border text-center p-1 rounded" 
                                       value={myScore ?? ""} 
-                                      // 自分が左側(myScore)を入力 -> データ上は正しい側へ送る
                                       onChange={(e) => updateMatchScore(p1.id, p2.id, true, e.target.value, isReversed)}
                                     />
                                     <span>-</span>
@@ -307,21 +330,16 @@ export default function LeagueApp() {
                                       type="number" 
                                       className="w-10 border text-center p-1 rounded" 
                                       value={oppScore ?? ""} 
-                                      // 相手が右側(oppScore)を入力
                                       onChange={(e) => updateMatchScore(p1.id, p2.id, false, e.target.value, isReversed)}
                                     />
                                   </div>
                                 ) : (
                                   <div className="flex justify-center gap-1">
-                                    {/* 勝敗ボタン 
-                                      updateMatchWinLoss(p1, p2, 自分の点, 相手の点, 反転してるか)
-                                    */}
                                     <button 
                                         onClick={() => updateMatchWinLoss(p1.id, p2.id, 1, 0, isReversed)}
                                         className={`w-8 h-8 rounded-full border transition-all ${myScore === 1 
                                             ? 'bg-red-500 text-white border-red-600 scale-110 shadow-md' 
                                             : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
-                                        title="勝ち"
                                     >○</button>
                                     
                                     {allowDraw && (
@@ -330,8 +348,7 @@ export default function LeagueApp() {
                                             className={`w-8 h-8 rounded-full border transition-all ${myScore === 0.5 
                                                 ? 'bg-green-500 text-white border-green-600 scale-110 shadow-md' 
                                                 : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
-                                            title="引き分け"
-                                        >△</button>
+                                    >△</button>
                                     )}
 
                                     <button 
@@ -339,7 +356,6 @@ export default function LeagueApp() {
                                         className={`w-8 h-8 rounded-full border transition-all ${myScore === 0 
                                             ? 'bg-blue-500 text-white border-blue-600 scale-110 shadow-md' 
                                             : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
-                                        title="負け"
                                     >●</button>
                                   </div>
                                 )}
