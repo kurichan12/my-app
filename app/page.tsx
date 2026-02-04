@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { toPng } from "html-to-image";
 
 // --- 型定義 ---
@@ -14,10 +14,11 @@ type MatchKey = string;
 
 export default function LeagueApp() {
   // --- 状態管理 ---
+  const [isLoaded, setIsLoaded] = useState(false);
   const [phase, setPhase] = useState<"settings" | "register" | "match">("settings");
   
-  // ★追加: タイトルの状態
-  const [title, setTitle] = useState("総当たりリーグ戦アプリ");
+  // ★変更: デフォルトタイトルを指定のものに変更
+  const [title, setTitle] = useState("第◯回 〇〇大会 ◯ブロック");
   
   const [mode, setMode] = useState<GameMode>("score");
   const [allowDraw, setAllowDraw] = useState(true);
@@ -27,7 +28,34 @@ export default function LeagueApp() {
   
   const tableRef = useRef<HTMLDivElement>(null);
 
-  // --- 1. 参加者登録ロジック ---
+  // --- データのロード ---
+  useEffect(() => {
+    const savedData = localStorage.getItem("league-app-data");
+    if (savedData) {
+      try {
+        const parsed = JSON.parse(savedData);
+        // ★変更: 保存データがない場合のフォールバックも新しいデフォルトに合わせる
+        setTitle(parsed.title || "第◯回 〇〇大会 ◯ブロック");
+        setMode(parsed.mode || "score");
+        setAllowDraw(parsed.allowDraw ?? true);
+        setPlayers(parsed.players || []);
+        setMatches(parsed.matches || {});
+        setPhase(parsed.phase || "settings");
+      } catch (e) {
+        console.error("保存データの読み込みに失敗しました", e);
+      }
+    }
+    setIsLoaded(true);
+  }, []);
+
+  // --- データの自動保存 ---
+  useEffect(() => {
+    if (!isLoaded) return;
+    const data = { title, mode, allowDraw, players, matches, phase };
+    localStorage.setItem("league-app-data", JSON.stringify(data));
+  }, [title, mode, allowDraw, players, matches, phase, isLoaded]);
+
+  // --- ロジック群 (変更なし) ---
   const addPlayer = () => {
     if (!newName.trim()) return;
     if (players.length >= 10) return alert("最大10人までです");
@@ -39,92 +67,61 @@ export default function LeagueApp() {
     setPlayers(players.filter((p) => p.id !== id));
   };
 
-  // --- 2. 試合結果更新ロジック ---
   const updateMatchWinLoss = (p1: string, p2: string, myScore: number, oppScore: number, isReversed: boolean) => {
     const key = `${p1}-${p2}`;
     const scoreA = isReversed ? oppScore : myScore;
     const scoreB = isReversed ? myScore : oppScore;
-
-    setMatches(prev => ({
-        ...prev,
-        [key]: { scoreA, scoreB }
-    }));
+    setMatches(prev => ({ ...prev, [key]: { scoreA, scoreB } }));
   };
 
   const updateMatchScore = (p1: string, p2: string, isMyScore: boolean, value: string, isReversed: boolean) => {
     const key = `${p1}-${p2}`;
     let val: number | null = value === "" ? null : Number(value);
-
     setMatches(prev => {
         const current = prev[key] || { scoreA: null, scoreB: null };
         let targetField: "scoreA" | "scoreB";
-
         if (!isReversed) {
             targetField = isMyScore ? "scoreA" : "scoreB";
         } else {
             targetField = isMyScore ? "scoreB" : "scoreA";
         }
-
         const updated = { ...current, [targetField]: val };
         return { ...prev, [key]: updated };
     });
   };
 
-  // --- 3. 集計・順位付けロジック ---
   const calculateStats = useCallback(() => {
     const stats = players.map((player) => {
-      let wins = 0;
-      let losses = 0;
-      let draws = 0;
-      let goalsFor = 0;
-      let goalsAgainst = 0;
-
+      let wins = 0, losses = 0, draws = 0, goalsFor = 0, goalsAgainst = 0;
       players.forEach((opponent) => {
         if (player.id === opponent.id) return;
-        
         const key1 = `${player.id}-${opponent.id}`;
         const key2 = `${opponent.id}-${player.id}`;
-        
         let sA: number | null = null;
         let sB: number | null = null;
 
         if (matches[key1]) {
-          sA = matches[key1].scoreA;
-          sB = matches[key1].scoreB;
+          sA = matches[key1].scoreA; sB = matches[key1].scoreB;
         } else if (matches[key2]) {
-          sA = matches[key2].scoreB;
-          sB = matches[key2].scoreA;
+          sA = matches[key2].scoreB; sB = matches[key2].scoreA;
         }
 
         if (sA !== null && sB !== null) {
           if (mode === "score") {
-            goalsFor += sA;
-            goalsAgainst += sB;
-            if (sA > sB) wins++;
-            else if (sA < sB) losses++;
-            else draws++;
+            goalsFor += sA; goalsAgainst += sB;
+            if (sA > sB) wins++; else if (sA < sB) losses++; else draws++;
           } else {
-            if (sA === 1) wins++;
-            else if (sA === 0 && sB === 1) losses++;
-            else if (sA === 0.5) draws++;
+            if (sA === 1) wins++; else if (sA === 0 && sB === 1) losses++; else if (sA === 0.5) draws++;
           }
         }
       });
-
-      return {
-        ...player,
-        wins,
-        losses,
-        draws,
-        goalsFor,
-        goalDiff: goalsFor - goalsAgainst,
-      };
+      return { ...player, wins, losses, draws, goalsFor, goalDiff: goalsFor - goalsAgainst };
     });
 
     return stats.sort((a, b) => {
       if (a.wins !== b.wins) return b.wins - a.wins;
       if (mode === "score" && a.losses !== b.losses) return a.losses - b.losses;
-
+      
       const keyDirect = `${a.id}-${b.id}`;
       const matchDirect = matches[keyDirect] || matches[`${b.id}-${a.id}`];
       if (matchDirect) {
@@ -134,8 +131,7 @@ export default function LeagueApp() {
                  if (mA.scoreA > mA.scoreB) return -1;
                  if (mA.scoreB > mA.scoreA) return 1;
             }
-          } 
-          else if (matches[`${b.id}-${a.id}`]) {
+          } else if (matches[`${b.id}-${a.id}`]) {
              const mB = matches[`${b.id}-${a.id}`];
              if (mB.scoreA !== null && mB.scoreB !== null) {
                  if (mB.scoreB > mB.scoreA) return -1;
@@ -143,7 +139,6 @@ export default function LeagueApp() {
              }
           }
       }
-
       if (mode === "score" && a.goalDiff !== b.goalDiff) return b.goalDiff - a.goalDiff;
       if (mode === "score" && a.goalsFor !== b.goalsFor) return b.goalsFor - a.goalsFor;
       return 0;
@@ -158,26 +153,56 @@ export default function LeagueApp() {
     toPng(tableRef.current, { cacheBust: true, backgroundColor: '#ffffff' })
       .then((dataUrl) => {
         const link = document.createElement("a");
-        // ★変更: ファイル名をタイトルに合わせる
-        link.download = `${title || "league-result"}.png`;
+        link.download = `${title}.png`;
         link.href = dataUrl;
         link.click();
       })
       .catch((err) => console.error(err));
   };
 
+  const copyToClipboard = () => {
+    let text = `【${title}】結果\n\n`;
+    rankedPlayers.forEach((p, i) => {
+        const rank = i + 1;
+        const icon = rank === 1 && hasMatches ? "👑 " : "";
+        let line = `${rank}位: ${icon}${p.name} / ${p.wins}勝${p.losses}敗`;
+        if (allowDraw) line += `${p.draws}分`;
+        if (mode === "score") line += ` (得失点:${p.goalDiff > 0 ? "+" : ""}${p.goalDiff})`;
+        text += line + "\n";
+    });
+    navigator.clipboard.writeText(text).then(() => alert("結果をコピーしました！")).catch(err => console.error(err));
+  };
+
+  const resetData = () => {
+    if(!confirm("本当に全てのデータを削除して最初に戻りますか？")) return;
+    localStorage.removeItem("league-app-data");
+    window.location.reload();
+  };
+
+  if (!isLoaded) return <div className="p-8 text-center">読み込み中...</div>;
+
   return (
     <div className="min-h-screen p-8 bg-gray-50 text-gray-800 font-sans">
       <div className="max-w-4xl mx-auto bg-white p-6 rounded-xl shadow-lg">
-        {/* ★変更: タイトルを入力可能に */}
-        <div className="border-b pb-4 mb-6">
-            <input 
-                type="text" 
-                value={title} 
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full text-2xl font-bold text-center border-none focus:ring-2 focus:ring-blue-300 rounded p-1"
-                placeholder="タイトルを入力（例：第1回〇〇杯）"
-            />
+        {/* ★変更: ヘッダー部分の出し分けロジック */}
+        <div className="border-b pb-4 mb-6 flex justify-between items-center gap-4">
+            {phase === "match" ? (
+                // 対戦画面（match）のときだけ編集可能な入力欄を表示
+                <input 
+                    type="text" 
+                    value={title} 
+                    onChange={(e) => setTitle(e.target.value)}
+                    className="flex-1 text-2xl font-bold text-center border-b-2 border-blue-200 focus:border-blue-500 focus:outline-none py-1"
+                    placeholder="大会名を入力"
+                />
+            ) : (
+                // 設定・登録画面では固定のアプリ名を表示
+                <h1 className="flex-1 text-2xl font-bold text-center">総当たりリーグ戦アプリ</h1>
+            )}
+            
+            <button onClick={resetData} className="text-xs text-red-400 hover:text-red-600 whitespace-nowrap px-2">
+                全削除
+            </button>
         </div>
 
         {phase === "settings" && (
@@ -246,13 +271,16 @@ export default function LeagueApp() {
 
         {phase === "match" && (
           <div className="space-y-8">
-            <div className="flex justify-between items-center print:hidden">
+            <div className="flex flex-wrap gap-2 justify-between items-center print:hidden">
                 <button onClick={() => setPhase("register")} className="text-sm text-gray-500 underline">← メンバー変更に戻る</button>
-                <button onClick={saveImage} className="bg-indigo-600 text-white px-4 py-2 rounded shadow">画像として保存</button>
+                <div className="flex gap-2">
+                    <button onClick={copyToClipboard} className="bg-gray-600 text-white px-4 py-2 rounded shadow hover:bg-gray-700">結果をコピー</button>
+                    <button onClick={saveImage} className="bg-indigo-600 text-white px-4 py-2 rounded shadow hover:bg-indigo-700">画像として保存</button>
+                </div>
             </div>
 
             <div ref={tableRef} className="p-4 bg-white">
-                {/* ★変更: 印刷/画像化用エリアにもタイトルを表示 */}
+                {/* 画像化エリア内のタイトルも状態に合わせて表示 */}
                 <h2 className="text-center font-bold text-2xl mb-4 break-words">{title}</h2>
                 
                 <div className="overflow-x-auto mb-8">
@@ -269,11 +297,9 @@ export default function LeagueApp() {
                           <th className="border p-2 bg-gray-50">{rowPlayer.name}</th>
                           {players.map((colPlayer, j) => {
                             if (i === j) return <td key={colPlayer.id} className="border p-2 bg-gray-300"></td>;
-                            
                             const isReversed = i > j;
                             const p1 = isReversed ? colPlayer : rowPlayer;
                             const p2 = isReversed ? rowPlayer : colPlayer;
-                            
                             const key = `${p1.id}-${p2.id}`;
                             const res = matches[key] || { scoreA: null, scoreB: null };
                             const myScore = isReversed ? res.scoreB : res.scoreA;
@@ -299,28 +325,9 @@ export default function LeagueApp() {
                                   </div>
                                 ) : (
                                   <div className="flex justify-center gap-1">
-                                    <button 
-                                        onClick={() => updateMatchWinLoss(p1.id, p2.id, 1, 0, isReversed)}
-                                        className={`w-8 h-8 rounded-full border transition-all ${myScore === 1 
-                                            ? 'bg-red-500 text-white border-red-600 scale-110 shadow-md' 
-                                            : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
-                                    >○</button>
-                                    
-                                    {allowDraw && (
-                                        <button 
-                                            onClick={() => updateMatchWinLoss(p1.id, p2.id, 0.5, 0.5, isReversed)}
-                                            className={`w-8 h-8 rounded-full border transition-all ${myScore === 0.5 
-                                                ? 'bg-green-500 text-white border-green-600 scale-110 shadow-md' 
-                                                : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
-                                        >△</button>
-                                    )}
-
-                                    <button 
-                                        onClick={() => updateMatchWinLoss(p1.id, p2.id, 0, 1, isReversed)}
-                                        className={`w-8 h-8 rounded-full border transition-all ${myScore === 0 
-                                            ? 'bg-blue-500 text-white border-blue-600 scale-110 shadow-md' 
-                                            : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}
-                                    >●</button>
+                                    <button onClick={() => updateMatchWinLoss(p1.id, p2.id, 1, 0, isReversed)} className={`w-8 h-8 rounded-full border transition-all ${myScore === 1 ? 'bg-red-500 text-white border-red-600 scale-110 shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>○</button>
+                                    {allowDraw && <button onClick={() => updateMatchWinLoss(p1.id, p2.id, 0.5, 0.5, isReversed)} className={`w-8 h-8 rounded-full border transition-all ${myScore === 0.5 ? 'bg-green-500 text-white border-green-600 scale-110 shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>△</button>}
+                                    <button onClick={() => updateMatchWinLoss(p1.id, p2.id, 0, 1, isReversed)} className={`w-8 h-8 rounded-full border transition-all ${myScore === 0 ? 'bg-blue-500 text-white border-blue-600 scale-110 shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>●</button>
                                   </div>
                                 )}
                               </td>
