@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { toPng } from "html-to-image";
 
 // --- 型定義 ---
@@ -19,6 +19,10 @@ export default function LeagueApp() {
   const [title, setTitle] = useState("第◯回 〇〇大会 ◯ブロック");
   const [mode, setMode] = useState<GameMode>("score");
   const [allowDraw, setAllowDraw] = useState(true);
+  
+  // ★追加: 対戦順を表示するかどうかの設定
+  const [showOrder, setShowOrder] = useState(false);
+
   const [players, setPlayers] = useState<Player[]>([]);
   const [newName, setNewName] = useState("");
   const [matches, setMatches] = useState<Record<MatchKey, MatchResult>>({});
@@ -34,6 +38,8 @@ export default function LeagueApp() {
         setTitle(parsed.title || "第◯回 〇〇大会 ◯ブロック");
         setMode(parsed.mode || "score");
         setAllowDraw(parsed.allowDraw ?? true);
+        // ★追加: 読み込み
+        setShowOrder(parsed.showOrder ?? false);
         setPlayers(parsed.players || []);
         setMatches(parsed.matches || {});
         setPhase(parsed.phase || "settings");
@@ -47,9 +53,10 @@ export default function LeagueApp() {
   // --- データの自動保存 ---
   useEffect(() => {
     if (!isLoaded) return;
-    const data = { title, mode, allowDraw, players, matches, phase };
+    // ★追加: showOrderも保存
+    const data = { title, mode, allowDraw, showOrder, players, matches, phase };
     localStorage.setItem("league-app-data", JSON.stringify(data));
-  }, [title, mode, allowDraw, players, matches, phase, isLoaded]);
+  }, [title, mode, allowDraw, showOrder, players, matches, phase, isLoaded]);
 
   // --- ロジック群 ---
   const addPlayer = () => {
@@ -141,6 +148,64 @@ export default function LeagueApp() {
     });
   }, [players, matches, mode]);
 
+  // ★追加: 対戦スケジュール生成（サークル法）
+  const schedule = useMemo(() => {
+    if (players.length < 2) return [];
+    
+    const ps = [...players];
+    // 奇数人の場合は「休み」ダミーを追加
+    if (ps.length % 2 !== 0) {
+        ps.push({ id: "dummy", name: "休み" });
+    }
+
+    const n = ps.length;
+    const rounds = n - 1;
+    const half = n / 2;
+    const matchesList: { no: number, p1: Player, p2: Player }[] = [];
+
+    // 固定プレイヤーと回転用配列
+    const fixed = ps[0];
+    const rotating = ps.slice(1);
+
+    let matchCount = 1;
+
+    for (let r = 0; r < rounds; r++) {
+        // 固定枠 vs 回転枠の最後
+        const pA = fixed;
+        const pB = rotating[rotating.length - 1];
+        if (pA.id !== "dummy" && pB.id !== "dummy") {
+            matchesList.push({ no: matchCount++, p1: pA, p2: pB });
+        }
+
+        // 残りのペアリング
+        for (let i = 0; i < half - 1; i++) {
+            const p1 = rotating[i];
+            const p2 = rotating[rotating.length - 2 - i];
+            if (p1.id !== "dummy" && p2.id !== "dummy") {
+                matchesList.push({ no: matchCount++, p1, p2 });
+            }
+        }
+
+        // 配列を回転（末尾を先頭へ）
+        const last = rotating.pop();
+        if (last) rotating.unshift(last);
+    }
+
+    return matchesList;
+  }, [players]);
+
+  // セルの試合番号検索用マップ
+  const matchOrderMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    schedule.forEach(m => {
+        // indexが小さい方を前にしたキーで保存
+        const key = `${m.p1.id}-${m.p2.id}`; // p1/p2の順序は保証できないので両方登録
+        map[`${m.p1.id}-${m.p2.id}`] = m.no;
+        map[`${m.p2.id}-${m.p1.id}`] = m.no;
+    });
+    return map;
+  }, [schedule]);
+
   const rankedPlayers = calculateStats();
   const hasMatches = Object.values(matches).some(m => m.scoreA !== null);
 
@@ -180,7 +245,6 @@ export default function LeagueApp() {
   return (
     <div className="min-h-screen p-8 bg-gray-50 text-gray-800 font-sans">
       <div className="max-w-4xl mx-auto bg-white p-6 rounded-xl shadow-lg">
-        {/* ヘッダー: 全削除ボタンを削除 */}
         <div className="border-b pb-4 mb-6 flex justify-between items-center gap-4">
             {phase === "match" ? (
                 <input 
@@ -223,13 +287,20 @@ export default function LeagueApp() {
                 <span>引き分けあり</span>
               </label>
             </div>
-            <button onClick={() => setPhase("register")} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700">次へ：参加者登録</button>
             
-            {/* 設定画面のフッターにも一応置いておく（邪魔にならない位置） */}
+            {/* ★追加: 対戦順の設定項目 */}
+            <div>
+              <h2 className="font-bold mb-2">3. 表示設定</h2>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={showOrder} onChange={(e) => setShowOrder(e.target.checked)} className="w-5 h-5" />
+                <span>対戦順（スケジュール）を表示する</span>
+              </label>
+              <p className="text-sm text-gray-500 mt-1 ml-7">総当たり表に試合番号を表示し、進行リストを作成します。</p>
+            </div>
+
+            <button onClick={() => setPhase("register")} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700">次へ：参加者登録</button>
             <div className="flex justify-end pt-8">
-                <button onClick={resetData} className="text-xs text-gray-300 hover:text-red-500 transition-colors">
-                    データをリセット
-                </button>
+                <button onClick={resetData} className="text-xs text-gray-300 hover:text-red-500 transition-colors">データをリセット</button>
             </div>
           </div>
         )}
@@ -300,32 +371,44 @@ export default function LeagueApp() {
                             const res = matches[key] || { scoreA: null, scoreB: null };
                             const myScore = isReversed ? res.scoreB : res.scoreA;
                             const oppScore = isReversed ? res.scoreA : res.scoreB;
+                            
+                            // ★追加: 試合番号の取得
+                            const matchNo = showOrder ? matchOrderMap[key] : null;
 
                             return (
-                              <td key={colPlayer.id} className="border p-2 text-center min-w-[100px]">
-                                {mode === "score" ? (
-                                  <div className="flex items-center justify-center gap-1">
-                                    <input 
-                                      type="number" 
-                                      className="w-10 border text-center p-1 rounded" 
-                                      value={myScore ?? ""} 
-                                      onChange={(e) => updateMatchScore(p1.id, p2.id, true, e.target.value, isReversed)}
-                                    />
-                                    <span>-</span>
-                                    <input 
-                                      type="number" 
-                                      className="w-10 border text-center p-1 rounded" 
-                                      value={oppScore ?? ""} 
-                                      onChange={(e) => updateMatchScore(p1.id, p2.id, false, e.target.value, isReversed)}
-                                    />
-                                  </div>
-                                ) : (
-                                  <div className="flex justify-center gap-1">
-                                    <button onClick={() => updateMatchWinLoss(p1.id, p2.id, 1, 0, isReversed)} className={`w-8 h-8 rounded-full border transition-all ${myScore === 1 ? 'bg-red-500 text-white border-red-600 scale-110 shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>○</button>
-                                    {allowDraw && <button onClick={() => updateMatchWinLoss(p1.id, p2.id, 0.5, 0.5, isReversed)} className={`w-8 h-8 rounded-full border transition-all ${myScore === 0.5 ? 'bg-green-500 text-white border-green-600 scale-110 shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>△</button>}
-                                    <button onClick={() => updateMatchWinLoss(p1.id, p2.id, 0, 1, isReversed)} className={`w-8 h-8 rounded-full border transition-all ${myScore === 0 ? 'bg-blue-500 text-white border-blue-600 scale-110 shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>●</button>
-                                  </div>
+                              <td key={colPlayer.id} className="border p-2 text-center min-w-[100px] relative">
+                                {/* ★追加: 試合番号の表示バッジ */}
+                                {matchNo && (
+                                    <span className="absolute top-1 left-1 text-[10px] bg-gray-200 text-gray-600 px-1 rounded">
+                                        #{matchNo}
+                                    </span>
                                 )}
+                                
+                                <div className={matchNo ? "mt-4" : ""}>
+                                    {mode === "score" ? (
+                                    <div className="flex items-center justify-center gap-1">
+                                        <input 
+                                        type="number" 
+                                        className="w-10 border text-center p-1 rounded" 
+                                        value={myScore ?? ""} 
+                                        onChange={(e) => updateMatchScore(p1.id, p2.id, true, e.target.value, isReversed)}
+                                        />
+                                        <span>-</span>
+                                        <input 
+                                        type="number" 
+                                        className="w-10 border text-center p-1 rounded" 
+                                        value={oppScore ?? ""} 
+                                        onChange={(e) => updateMatchScore(p1.id, p2.id, false, e.target.value, isReversed)}
+                                        />
+                                    </div>
+                                    ) : (
+                                    <div className="flex justify-center gap-1">
+                                        <button onClick={() => updateMatchWinLoss(p1.id, p2.id, 1, 0, isReversed)} className={`w-8 h-8 rounded-full border transition-all ${myScore === 1 ? 'bg-red-500 text-white border-red-600 scale-110 shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>○</button>
+                                        {allowDraw && <button onClick={() => updateMatchWinLoss(p1.id, p2.id, 0.5, 0.5, isReversed)} className={`w-8 h-8 rounded-full border transition-all ${myScore === 0.5 ? 'bg-green-500 text-white border-green-600 scale-110 shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>△</button>}
+                                        <button onClick={() => updateMatchWinLoss(p1.id, p2.id, 0, 1, isReversed)} className={`w-8 h-8 rounded-full border transition-all ${myScore === 0 ? 'bg-blue-500 text-white border-blue-600 scale-110 shadow-md' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'}`}>●</button>
+                                    </div>
+                                    )}
+                                </div>
                               </td>
                             );
                           })}
@@ -334,6 +417,39 @@ export default function LeagueApp() {
                     </tbody>
                   </table>
                 </div>
+                
+                {/* ★追加: 試合進行リスト (showOrderがONのときだけ表示) */}
+                {showOrder && (
+                    <div className="mb-8 p-4 bg-gray-50 rounded border">
+                        <h3 className="font-bold text-lg mb-2">試合スケジュール</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+                            {schedule.map((m) => {
+                                const key = `${m.p1.id}-${m.p2.id}`;
+                                const res = matches[key];
+                                const isFinished = res?.scoreA !== null && res?.scoreA !== undefined;
+                                let resultStr = "vs";
+                                if (isFinished) {
+                                    if (mode === "score") {
+                                        resultStr = `${res.scoreA} - ${res.scoreB}`;
+                                    } else {
+                                        const resA = res.scoreA === 1 ? "○" : res.scoreA === 0.5 ? "△" : "●";
+                                        const resB = res.scoreB === 1 ? "○" : res.scoreB === 0.5 ? "△" : "●";
+                                        resultStr = `${resA} - ${resB}`;
+                                    }
+                                }
+
+                                return (
+                                    <div key={m.no} className={`flex items-center gap-2 p-2 rounded ${isFinished ? 'bg-gray-200 text-gray-500' : 'bg-white border'}`}>
+                                        <span className="font-bold text-blue-600 w-8">#{m.no}</span>
+                                        <span className="font-bold">{m.p1.name}</span>
+                                        <span className="px-2 text-gray-500">{resultStr}</span>
+                                        <span className="font-bold">{m.p2.name}</span>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
 
                 <h3 className="font-bold text-lg mb-2">現在の順位</h3>
                 <table className="w-full text-left border-collapse">
@@ -372,14 +488,8 @@ export default function LeagueApp() {
                 </table>
             </div>
 
-            {/* ★ここが新しい全削除ボタンの配置場所 */}
             <div className="flex justify-end pt-4 border-t print:hidden">
-                <button 
-                    onClick={resetData} 
-                    className="text-xs text-gray-400 underline hover:text-red-600 transition-colors"
-                >
-                    データを全削除してリセット
-                </button>
+                <button onClick={resetData} className="text-xs text-gray-400 underline hover:text-red-600 transition-colors">データを全削除してリセット</button>
             </div>
           </div>
         )}
