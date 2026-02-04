@@ -16,10 +16,7 @@ export default function LeagueApp() {
   // --- 状態管理 ---
   const [isLoaded, setIsLoaded] = useState(false);
   const [phase, setPhase] = useState<"settings" | "register" | "match">("settings");
-  
-  // ★変更: デフォルトタイトルを指定のものに変更
   const [title, setTitle] = useState("第◯回 〇〇大会 ◯ブロック");
-  
   const [mode, setMode] = useState<GameMode>("score");
   const [allowDraw, setAllowDraw] = useState(true);
   const [players, setPlayers] = useState<Player[]>([]);
@@ -34,7 +31,6 @@ export default function LeagueApp() {
     if (savedData) {
       try {
         const parsed = JSON.parse(savedData);
-        // ★変更: 保存データがない場合のフォールバックも新しいデフォルトに合わせる
         setTitle(parsed.title || "第◯回 〇〇大会 ◯ブロック");
         setMode(parsed.mode || "score");
         setAllowDraw(parsed.allowDraw ?? true);
@@ -55,7 +51,7 @@ export default function LeagueApp() {
     localStorage.setItem("league-app-data", JSON.stringify(data));
   }, [title, mode, allowDraw, players, matches, phase, isLoaded]);
 
-  // --- ロジック群 (変更なし) ---
+  // --- ロジック群 ---
   const addPlayer = () => {
     if (!newName.trim()) return;
     if (players.length >= 10) return alert("最大10人までです");
@@ -174,7 +170,7 @@ export default function LeagueApp() {
   };
 
   const resetData = () => {
-    if(!confirm("本当に全てのデータを削除して最初に戻りますか？")) return;
+    if(!confirm("【注意】\n本当に全てのデータを削除しますか？\nこの操作は取り消せません。")) return;
     localStorage.removeItem("league-app-data");
     window.location.reload();
   };
@@ -184,10 +180,9 @@ export default function LeagueApp() {
   return (
     <div className="min-h-screen p-8 bg-gray-50 text-gray-800 font-sans">
       <div className="max-w-4xl mx-auto bg-white p-6 rounded-xl shadow-lg">
-        {/* ★変更: ヘッダー部分の出し分けロジック */}
+        {/* ヘッダー: 全削除ボタンを削除 */}
         <div className="border-b pb-4 mb-6 flex justify-between items-center gap-4">
             {phase === "match" ? (
-                // 対戦画面（match）のときだけ編集可能な入力欄を表示
                 <input 
                     type="text" 
                     value={title} 
@@ -196,13 +191,8 @@ export default function LeagueApp() {
                     placeholder="大会名を入力"
                 />
             ) : (
-                // 設定・登録画面では固定のアプリ名を表示
                 <h1 className="flex-1 text-2xl font-bold text-center">総当たりリーグ戦アプリ</h1>
             )}
-            
-            <button onClick={resetData} className="text-xs text-red-400 hover:text-red-600 whitespace-nowrap px-2">
-                全削除
-            </button>
         </div>
 
         {phase === "settings" && (
@@ -234,6 +224,13 @@ export default function LeagueApp() {
               </label>
             </div>
             <button onClick={() => setPhase("register")} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700">次へ：参加者登録</button>
+            
+            {/* 設定画面のフッターにも一応置いておく（邪魔にならない位置） */}
+            <div className="flex justify-end pt-8">
+                <button onClick={resetData} className="text-xs text-gray-300 hover:text-red-500 transition-colors">
+                    データをリセット
+                </button>
+            </div>
           </div>
         )}
 
@@ -280,7 +277,6 @@ export default function LeagueApp() {
             </div>
 
             <div ref={tableRef} className="p-4 bg-white">
-                {/* 画像化エリア内のタイトルも状態に合わせて表示 */}
                 <h2 className="text-center font-bold text-2xl mb-4 break-words">{title}</h2>
                 
                 <div className="overflow-x-auto mb-8">
@@ -374,6 +370,16 @@ export default function LeagueApp() {
                         ))}
                     </tbody>
                 </table>
+            </div>
+
+            {/* ★ここが新しい全削除ボタンの配置場所 */}
+            <div className="flex justify-end pt-4 border-t print:hidden">
+                <button 
+                    onClick={resetData} 
+                    className="text-xs text-gray-400 underline hover:text-red-600 transition-colors"
+                >
+                    データを全削除してリセット
+                </button>
             </div>
           </div>
         )}
