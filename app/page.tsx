@@ -38,7 +38,6 @@ export default function LeagueApp() {
         setTitle(parsed.title || "第◯回 〇〇大会 ◯ブロック");
         setMode(parsed.mode || "score");
         setAllowDraw(parsed.allowDraw ?? true);
-        // ★追加: 読み込み
         setShowOrder(parsed.showOrder ?? false);
         setPlayers(parsed.players || []);
         setMatches(parsed.matches || {});
@@ -53,7 +52,6 @@ export default function LeagueApp() {
   // --- データの自動保存 ---
   useEffect(() => {
     if (!isLoaded) return;
-    // ★追加: showOrderも保存
     const data = { title, mode, allowDraw, showOrder, players, matches, phase };
     localStorage.setItem("league-app-data", JSON.stringify(data));
   }, [title, mode, allowDraw, showOrder, players, matches, phase, isLoaded]);
@@ -153,7 +151,6 @@ export default function LeagueApp() {
     if (players.length < 2) return [];
     
     const ps = [...players];
-    // 奇数人の場合は「休み」ダミーを追加
     if (ps.length % 2 !== 0) {
         ps.push({ id: "dummy", name: "休み" });
     }
@@ -163,21 +160,18 @@ export default function LeagueApp() {
     const half = n / 2;
     const matchesList: { no: number, p1: Player, p2: Player }[] = [];
 
-    // 固定プレイヤーと回転用配列
     const fixed = ps[0];
     const rotating = ps.slice(1);
 
     let matchCount = 1;
 
     for (let r = 0; r < rounds; r++) {
-        // 固定枠 vs 回転枠の最後
         const pA = fixed;
         const pB = rotating[rotating.length - 1];
         if (pA.id !== "dummy" && pB.id !== "dummy") {
             matchesList.push({ no: matchCount++, p1: pA, p2: pB });
         }
 
-        // 残りのペアリング
         for (let i = 0; i < half - 1; i++) {
             const p1 = rotating[i];
             const p2 = rotating[rotating.length - 2 - i];
@@ -186,7 +180,6 @@ export default function LeagueApp() {
             }
         }
 
-        // 配列を回転（末尾を先頭へ）
         const last = rotating.pop();
         if (last) rotating.unshift(last);
     }
@@ -194,12 +187,9 @@ export default function LeagueApp() {
     return matchesList;
   }, [players]);
 
-  // セルの試合番号検索用マップ
   const matchOrderMap = useMemo(() => {
     const map: Record<string, number> = {};
     schedule.forEach(m => {
-        // indexが小さい方を前にしたキーで保存
-        const key = `${m.p1.id}-${m.p2.id}`; // p1/p2の順序は保証できないので両方登録
         map[`${m.p1.id}-${m.p2.id}`] = m.no;
         map[`${m.p2.id}-${m.p1.id}`] = m.no;
     });
@@ -209,9 +199,38 @@ export default function LeagueApp() {
   const rankedPlayers = calculateStats();
   const hasMatches = Object.values(matches).some(m => m.scoreA !== null);
 
+  // ★修正: 画像保存ロジック（スマホのはみ出し対策）
   const saveImage = () => {
     if (tableRef.current === null) return;
-    toPng(tableRef.current, { cacheBust: true, backgroundColor: '#ffffff' })
+    
+    // 現在の表示幅を取得
+    let targetWidth = tableRef.current.offsetWidth;
+    
+    // 内部にあるテーブル要素を探し、その「本当の幅(scrollWidth)」を取得する
+    const scrollableTable = tableRef.current.querySelector('table');
+    
+    if (scrollableTable) {
+        // テーブルの全幅 + コンテナの余白分(p-4 = 32px程度)を計算
+        // 少し余裕を持って +50px としています
+        const realTableWidth = scrollableTable.scrollWidth + 50;
+        
+        // もし画面幅よりもテーブルの方が大きければ、画像化サイズをテーブルに合わせる
+        if (realTableWidth > targetWidth) {
+            targetWidth = realTableWidth;
+        }
+    }
+
+    // オプションで幅を指定して画像化
+    toPng(tableRef.current, { 
+        cacheBust: true, 
+        backgroundColor: '#ffffff',
+        width: targetWidth, // キャンバスの幅を拡張
+        style: {
+            width: `${targetWidth}px`, // 要素自体の幅を強制的に広げる
+            maxWidth: 'none',          // スマホ用のmax-w制限を解除
+            height: 'auto'             // 高さはなりゆき
+        }
+    })
       .then((dataUrl) => {
         const link = document.createElement("a");
         link.download = `${title}.png`;
@@ -288,7 +307,6 @@ export default function LeagueApp() {
               </label>
             </div>
             
-            {/* ★追加: 対戦順の設定項目 */}
             <div>
               <h2 className="font-bold mb-2">3. 表示設定</h2>
               <label className="flex items-center gap-2">
@@ -371,19 +389,15 @@ export default function LeagueApp() {
                             const res = matches[key] || { scoreA: null, scoreB: null };
                             const myScore = isReversed ? res.scoreB : res.scoreA;
                             const oppScore = isReversed ? res.scoreA : res.scoreB;
-                            
-                            // ★追加: 試合番号の取得
                             const matchNo = showOrder ? matchOrderMap[key] : null;
 
                             return (
                               <td key={colPlayer.id} className="border p-2 text-center min-w-[100px] relative">
-                                {/* ★追加: 試合番号の表示バッジ */}
                                 {matchNo && (
                                     <span className="absolute top-1 left-1 text-[10px] bg-gray-200 text-gray-600 px-1 rounded">
                                         #{matchNo}
                                     </span>
                                 )}
-                                
                                 <div className={matchNo ? "mt-4" : ""}>
                                     {mode === "score" ? (
                                     <div className="flex items-center justify-center gap-1">
@@ -418,7 +432,6 @@ export default function LeagueApp() {
                   </table>
                 </div>
                 
-                {/* ★追加: 試合進行リスト (showOrderがONのときだけ表示) */}
                 {showOrder && (
                     <div className="mb-8 p-4 bg-gray-50 rounded border">
                         <h3 className="font-bold text-lg mb-2">試合スケジュール</h3>
