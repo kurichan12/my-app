@@ -324,38 +324,35 @@ export default function LeagueApp() {
 
     try {
       const dataUrl = await toPng(root, {
-        cacheBust: true,
-        backgroundColor: "#ffffff",
+  cacheBust: true,
+  backgroundColor: "#ffffff",
+  pixelRatio: 2,
+  onClone: (clonedDoc: Document) => {
+    const clonedRoot = clonedDoc.querySelector(
+      '[data-league-capture="root"]'
+    ) as HTMLDivElement | null;
+    if (!clonedRoot) return;
 
-        // 画像を少し高精細に（文字が潰れにくい）
-        pixelRatio: 2,
+    clonedRoot.style.width = `${targetWidth}px`;
+    clonedRoot.style.maxWidth = "none";
 
-        // ここが重要：クローンしたDOMの見た目を “画像用に” 調整する
-        onClone: (clonedDoc) => {
-          // 元の要素をクローンから探す
-          const clonedRoot = clonedDoc.querySelector('[data-league-capture="root"]') as HTMLDivElement | null;
-          if (!clonedRoot) return;
+    const scrollWrappers = clonedRoot.querySelectorAll(".overflow-x-auto");
+    scrollWrappers.forEach((el) => {
+      const div = el as HTMLDivElement;
+      div.style.overflowX = "visible";
+      div.style.overflowY = "visible";
+      div.style.maxWidth = "none";
+      div.style.width = `${targetWidth}px`;
+    });
 
-          // ルートを画像用の幅に固定（maxWidth 制限などを無効化）
-          clonedRoot.style.width = `${targetWidth}px`;
-          clonedRoot.style.maxWidth = "none";
+    const t = clonedRoot.querySelector("table") as HTMLTableElement | null;
+    if (t) {
+      t.style.width = `${Math.max(tableFullWidth, targetWidth - 40)}px`;
+      t.style.maxWidth = "none";
+    }
+  },
+} as any);
 
-          // 横スクロール領域を「見える化」して切れを防ぐ
-          const scrollWrappers = clonedRoot.querySelectorAll(".overflow-x-auto");
-          scrollWrappers.forEach((el) => {
-            const div = el as HTMLDivElement;
-            div.style.overflowX = "visible";
-            div.style.overflowY = "visible";
-            div.style.maxWidth = "none";
-            div.style.width = `${targetWidth}px`;
-          });
-
-          // テーブルも幅を強制（scrollWidth 相当）
-          const t = clonedRoot.querySelector("table") as HTMLTableElement | null;
-          if (t) {
-            t.style.width = `${Math.max(tableFullWidth, targetWidth - 40)}px`;
-            t.style.maxWidth = "none";
-          }
         },
       });
 
