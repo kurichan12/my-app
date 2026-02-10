@@ -21,7 +21,6 @@ export default function LeagueApp() {
   const [title, setTitle] = useState("第◯回 〇〇大会 ◯ブロック");
   const [mode, setMode] = useState<GameMode>("score");
   const [allowDraw, setAllowDraw] = useState(true);
-
   const [showOrder, setShowOrder] = useState(false);
 
   const [players, setPlayers] = useState<Player[]>([]);
@@ -125,11 +124,8 @@ export default function LeagueApp() {
       const current = prev[key] || { scoreA: null, scoreB: null };
 
       let targetField: "scoreA" | "scoreB";
-      if (!isReversed) {
-        targetField = isMyScore ? "scoreA" : "scoreB";
-      } else {
-        targetField = isMyScore ? "scoreB" : "scoreA";
-      }
+      if (!isReversed) targetField = isMyScore ? "scoreA" : "scoreB";
+      else targetField = isMyScore ? "scoreB" : "scoreA";
 
       const updated = { ...current, [targetField]: val };
       return { ...prev, [key]: updated };
@@ -239,7 +235,6 @@ export default function LeagueApp() {
 
     const fixed = ps[0];
     const rotating = ps.slice(1);
-
     let matchCount = 1;
 
     for (let r = 0; r < rounds; r++) {
@@ -269,45 +264,73 @@ export default function LeagueApp() {
     return map;
   }, [schedule]);
 
-  // ★画像保存（スマホで表が切れる問題を避ける）
+  // ★主目的：ズーム/スマホでも見切れない画像出力
+  // 方針：表示中DOMを直接撮らず、「画像出力用のクローンDOM」を画面外に作ってそれを撮る
   const saveImage = async () => {
     if (!tableRef.current) return;
 
     const root = tableRef.current;
 
-    const table = root.querySelector("table") as HTMLTableElement | null;
-    const tableFullWidth = table ? table.scrollWidth : root.scrollWidth;
+    // 元のテーブルの「本当の横幅」
+    const srcTable = root.querySelector("table") as HTMLTableElement | null;
+    const tableFullWidth = srcTable ? srcTable.scrollWidth : root.scrollWidth;
+
+    // 余白込みで少し広げる
     const targetWidth = Math.max(root.scrollWidth, tableFullWidth) + 40;
 
+    // 1) 出力用クローンを作る（ここがズーム耐性の肝）
+    const exportNode = root.cloneNode(true) as HTMLDivElement;
+
+    // 2) 画面外に配置（表示はしないが、レイアウト計算はさせる）
+    exportNode.style.position = "fixed";
+    exportNode.style.left = "-100000px";
+    exportNode.style.top = "0";
+    exportNode.style.background = "#ffffff";
+    exportNode.style.width = `${targetWidth}px`;
+    exportNode.style.maxWidth = "none";
+    exportNode.style.transform = "none";
+    exportNode.style.pointerEvents = "none";
+
+    // 3) 横スクロール容器を無効化（画像では “全部見える” 状態にする）
+    const wrappers = exportNode.querySelectorAll(".overflow-x-auto");
+    wrappers.forEach((el) => {
+      const div = el as HTMLDivElement;
+      div.style.overflowX = "visible";
+      div.style.overflowY = "visible";
+      div.style.maxWidth = "none";
+      div.style.width = `${targetWidth}px`;
+    });
+
+    // 4) テーブル幅を scrollWidth に固定（w-full だと親幅に吸われることがある）
+    const tables = exportNode.querySelectorAll("table");
+    tables.forEach((t) => {
+      const tbl = t as HTMLTableElement;
+      // 総当たり表だけ広げたいが、複数あるので全部に安全側設定
+      tbl.style.width = `${Math.max(tableFullWidth, targetWidth - 40)}px`;
+      tbl.style.maxWidth = "none";
+      tbl.style.tableLayout = "auto";
+    });
+
+    document.body.appendChild(exportNode);
+
     try {
-      // 重要：Options型が合わないため、toPng自体を any 扱いで呼ぶ（構文が崩れにくい）
-      const dataUrl: string = await (toPng as any)(root, {
+      // レイアウト確定を待つ（これを入れないと幅が反映されない環境がある）
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+      const exportHeight = exportNode.scrollHeight + 20;
+
+      // Optionsの型問題があるので toPng を any で呼ぶ（構文事故も避けられる）
+      const dataUrl: string = await (toPng as any)(exportNode, {
         cacheBust: true,
         backgroundColor: "#ffffff",
         pixelRatio: 2,
-        onClone: (clonedDoc: Document) => {
-          const clonedRoot = clonedDoc.querySelector(
-            '[data-league-capture="root"]'
-          ) as HTMLDivElement | null;
-          if (!clonedRoot) return;
-
-          clonedRoot.style.width = `${targetWidth}px`;
-          clonedRoot.style.maxWidth = "none";
-
-          const scrollWrappers = clonedRoot.querySelectorAll(".overflow-x-auto");
-          scrollWrappers.forEach((el: Element) => {
-            const div = el as HTMLDivElement;
-            div.style.overflowX = "visible";
-            div.style.overflowY = "visible";
-            div.style.maxWidth = "none";
-            div.style.width = `${targetWidth}px`;
-          });
-
-          const t = clonedRoot.querySelector("table") as HTMLTableElement | null;
-          if (t) {
-            t.style.width = `${Math.max(tableFullWidth, targetWidth - 40)}px`;
-            t.style.maxWidth = "none";
-          }
+        width: targetWidth,
+        height: exportHeight,
+        style: {
+          width: `${targetWidth}px`,
+          height: `${exportHeight}px`,
+          maxWidth: "none",
+          transform: "none",
         },
       });
 
@@ -318,6 +341,8 @@ export default function LeagueApp() {
     } catch (err) {
       console.error(err);
       alert("画像保存に失敗しました（端末やブラウザによって制限がある場合があります）");
+    } finally {
+      exportNode.remove();
     }
   };
 
