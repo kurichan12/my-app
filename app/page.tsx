@@ -22,7 +22,6 @@ export default function LeagueApp() {
   const [mode, setMode] = useState<GameMode>("score");
   const [allowDraw, setAllowDraw] = useState(true);
 
-  // 対戦順表示
   const [showOrder, setShowOrder] = useState(false);
 
   const [players, setPlayers] = useState<Player[]>([]);
@@ -44,7 +43,11 @@ export default function LeagueApp() {
         setShowOrder(typeof parsed.showOrder === "boolean" ? parsed.showOrder : false);
         setPlayers(Array.isArray(parsed.players) ? parsed.players : []);
         setMatches(parsed.matches && typeof parsed.matches === "object" ? parsed.matches : {});
-        setPhase(parsed.phase === "settings" || parsed.phase === "register" || parsed.phase === "match" ? parsed.phase : "settings");
+        setPhase(
+          parsed.phase === "settings" || parsed.phase === "register" || parsed.phase === "match"
+            ? parsed.phase
+            : "settings"
+        );
       } catch (e) {
         console.error("保存データの読み込みに失敗しました", e);
       }
@@ -60,19 +63,11 @@ export default function LeagueApp() {
   }, [title, mode, allowDraw, showOrder, players, matches, phase, isLoaded]);
 
   // --- ユーティリティ：スコア入力の安全化 ---
-  // 空文字 -> null
-  // 数字として不正(NaN/Infinity) -> null
-  // 負数 -> null
-  // ここは無料版として「一般的」扱いに寄せるなら、基本は非負整数でよい。
-  // 小数を許したいなら Math.floor を外す。
   const parseScore = (value: string): number | null => {
     if (value === "") return null;
-
     const n = Number(value);
     if (!Number.isFinite(n)) return null;
     if (n < 0) return null;
-
-    // 得点は普通整数なので丸める（小数を許すならこの行を消す）
     return Math.floor(n);
   };
 
@@ -82,26 +77,21 @@ export default function LeagueApp() {
     if (!name) return;
     if (players.length >= 10) return alert("最大10人までです");
 
-    // 同名禁止は仕様次第。無料版は警告だけにしておく（必要なら return で止めてOK）
     const dup = players.some((p) => p.name.trim() === name);
-    if (dup) {
-      alert("同じ名前が既にあります（運用上紛らわしいので注意）");
-    }
+    if (dup) alert("同じ名前が既にあります（運用上紛らわしいので注意）");
 
     setPlayers([...players, { id: crypto.randomUUID(), name }]);
     setNewName("");
   };
 
-  // ★修正：プレイヤー削除時に matches の残骸を掃除（永続データが汚れ続けるのを防ぐ）
   const removePlayer = (id: string) => {
     setPlayers((prev) => prev.filter((p) => p.id !== id));
 
     setMatches((prev) => {
       const next: Record<string, MatchResult> = {};
       for (const [k, v] of Object.entries(prev)) {
-        // キー形式: "p1-p2"
         const [a, b] = k.split("-");
-        if (a === id || b === id) continue; // 削除対象のIDを含む試合は捨てる
+        if (a === id || b === id) continue;
         next[k] = v;
       }
       return next;
@@ -168,14 +158,12 @@ export default function LeagueApp() {
           sA = matches[key1].scoreA;
           sB = matches[key1].scoreB;
         } else if (matches[key2]) {
-          // 逆向き保存のときは入れ替える
           sA = matches[key2].scoreB;
           sB = matches[key2].scoreA;
         }
 
-        // 試合は「両方入っている」ものだけ確定扱い
         if (sA === null || sB === null) return;
-        if (!Number.isFinite(sA) || !Number.isFinite(sB)) return; // 念のため
+        if (!Number.isFinite(sA) || !Number.isFinite(sB)) return;
 
         if (mode === "score") {
           goalsFor += sA;
@@ -185,7 +173,6 @@ export default function LeagueApp() {
           else if (sA < sB) losses++;
           else draws++;
         } else {
-          // win-loss は (1,0)(0.5,0.5)(0,1) の前提
           if (sA === 1) wins++;
           else if (sA === 0.5) draws++;
           else if (sA === 0) losses++;
@@ -195,21 +182,15 @@ export default function LeagueApp() {
       return { ...player, wins, losses, draws, goalsFor, goalsAgainst, goalDiff: goalsFor - goalsAgainst };
     });
 
-    // 順位決定（無料版として一般的な規則寄り）
     return stats.sort((a, b) => {
-      // 1) 勝数
       if (a.wins !== b.wins) return b.wins - a.wins;
-
-      // 2) scoreモードは負数が少ない方（同勝数のとき）
       if (mode === "score" && a.losses !== b.losses) return a.losses - b.losses;
 
-      // 3) 直接対決（勝った方を上）
       const keyAB = `${a.id}-${b.id}`;
       const keyBA = `${b.id}-${a.id}`;
       const mAB = matches[keyAB];
       const mBA = matches[keyBA];
 
-      // 直接対決が確定しているなら比較
       if (mAB && mAB.scoreA !== null && mAB.scoreB !== null) {
         if (mode === "score") {
           if (mAB.scoreA > mAB.scoreB) return -1;
@@ -219,34 +200,26 @@ export default function LeagueApp() {
           if (mAB.scoreA === 0) return 1;
         }
       } else if (mBA && mBA.scoreA !== null && mBA.scoreB !== null) {
-        // 保存方向が逆なら読み替え
         if (mode === "score") {
-          // b-a で保存されているので、a の得点は scoreB
           const aScore = mBA.scoreB;
           const bScore = mBA.scoreA;
           if (aScore > bScore) return -1;
           if (aScore < bScore) return 1;
         } else {
-          // a の結果は scoreB
           const aRes = mBA.scoreB;
           if (aRes === 1) return -1;
           if (aRes === 0) return 1;
         }
       }
 
-      // 4) scoreモードは得失点差
       if (mode === "score" && a.goalDiff !== b.goalDiff) return b.goalDiff - a.goalDiff;
-
-      // 5) scoreモードは総得点
       if (mode === "score" && a.goalsFor !== b.goalsFor) return b.goalsFor - a.goalsFor;
-
       return 0;
     });
   }, [players, matches, mode]);
 
   const rankedPlayers = useMemo(() => calculateStats(), [calculateStats]);
 
-  // ★修正：試合があるか判定（両方入ってるものだけ）
   const hasMatches = useMemo(
     () => Object.values(matches).some((m) => m.scoreA !== null && m.scoreB !== null),
     [matches]
@@ -257,9 +230,7 @@ export default function LeagueApp() {
     if (players.length < 2) return [];
 
     const ps = [...players];
-    if (ps.length % 2 !== 0) {
-      ps.push({ id: "dummy", name: "休み" });
-    }
+    if (ps.length % 2 !== 0) ps.push({ id: "dummy", name: "休み" });
 
     const n = ps.length;
     const rounds = n - 1;
@@ -274,16 +245,12 @@ export default function LeagueApp() {
     for (let r = 0; r < rounds; r++) {
       const pA = fixed;
       const pB = rotating[rotating.length - 1];
-      if (pA.id !== "dummy" && pB.id !== "dummy") {
-        matchesList.push({ no: matchCount++, p1: pA, p2: pB });
-      }
+      if (pA.id !== "dummy" && pB.id !== "dummy") matchesList.push({ no: matchCount++, p1: pA, p2: pB });
 
       for (let i = 0; i < half - 1; i++) {
         const p1 = rotating[i];
         const p2 = rotating[rotating.length - 2 - i];
-        if (p1.id !== "dummy" && p2.id !== "dummy") {
-          matchesList.push({ no: matchCount++, p1, p2 });
-        }
+        if (p1.id !== "dummy" && p2.id !== "dummy") matchesList.push({ no: matchCount++, p1, p2 });
       }
 
       const last = rotating.pop();
@@ -302,57 +269,45 @@ export default function LeagueApp() {
     return map;
   }, [schedule]);
 
-  // ★今回の主目的：スマホで画像出力すると表が切れる問題を潰す
-  //
-  // 原因：テーブルは overflow-x-auto の中にあり、画面幅より大きい部分は「横スクロール」で見る設計。
-  // html-to-image は “今見えている部分” を基準にレンダリングしやすく、
-  // overflow に隠れた領域（横スクロールで見えるはずの部分）が PNG に入らず切れることがある。
-  //
-  // 対策：toPng の onClone でクローン側 DOM を書き換え、
-  // overflow-x-auto を overflow: visible にして、幅をテーブルの scrollWidth に合わせて広げる。
+  // ★画像保存（スマホで表が切れる問題を避ける）
   const saveImage = async () => {
     if (!tableRef.current) return;
 
     const root = tableRef.current;
 
-    // 画像化したい「実テーブル」の幅を取得（スクロール分を含む）
-    const table = root.querySelector("table");
-    const tableFullWidth = table ? (table as HTMLTableElement).scrollWidth : root.scrollWidth;
-
-    // 余白込みで少しだけ広げる（タイトル折り返し等の余裕）
+    const table = root.querySelector("table") as HTMLTableElement | null;
+    const tableFullWidth = table ? table.scrollWidth : root.scrollWidth;
     const targetWidth = Math.max(root.scrollWidth, tableFullWidth) + 40;
 
     try {
-      const dataUrl = await toPng(root, {
-  cacheBust: true,
-  backgroundColor: "#ffffff",
-  pixelRatio: 2,
-  onClone: (clonedDoc: Document) => {
-    const clonedRoot = clonedDoc.querySelector(
-      '[data-league-capture="root"]'
-    ) as HTMLDivElement | null;
-    if (!clonedRoot) return;
+      // 重要：Options型が合わないため、toPng自体を any 扱いで呼ぶ（構文が崩れにくい）
+      const dataUrl: string = await (toPng as any)(root, {
+        cacheBust: true,
+        backgroundColor: "#ffffff",
+        pixelRatio: 2,
+        onClone: (clonedDoc: Document) => {
+          const clonedRoot = clonedDoc.querySelector(
+            '[data-league-capture="root"]'
+          ) as HTMLDivElement | null;
+          if (!clonedRoot) return;
 
-    clonedRoot.style.width = `${targetWidth}px`;
-    clonedRoot.style.maxWidth = "none";
+          clonedRoot.style.width = `${targetWidth}px`;
+          clonedRoot.style.maxWidth = "none";
 
-    const scrollWrappers = clonedRoot.querySelectorAll(".overflow-x-auto");
-    scrollWrappers.forEach((el) => {
-      const div = el as HTMLDivElement;
-      div.style.overflowX = "visible";
-      div.style.overflowY = "visible";
-      div.style.maxWidth = "none";
-      div.style.width = `${targetWidth}px`;
-    });
+          const scrollWrappers = clonedRoot.querySelectorAll(".overflow-x-auto");
+          scrollWrappers.forEach((el: Element) => {
+            const div = el as HTMLDivElement;
+            div.style.overflowX = "visible";
+            div.style.overflowY = "visible";
+            div.style.maxWidth = "none";
+            div.style.width = `${targetWidth}px`;
+          });
 
-    const t = clonedRoot.querySelector("table") as HTMLTableElement | null;
-    if (t) {
-      t.style.width = `${Math.max(tableFullWidth, targetWidth - 40)}px`;
-      t.style.maxWidth = "none";
-    }
-  },
-} as any);
-
+          const t = clonedRoot.querySelector("table") as HTMLTableElement | null;
+          if (t) {
+            t.style.width = `${Math.max(tableFullWidth, targetWidth - 40)}px`;
+            t.style.maxWidth = "none";
+          }
         },
       });
 
@@ -433,12 +388,7 @@ export default function LeagueApp() {
             <div>
               <h2 className="font-bold mb-2">2. 引き分け</h2>
               <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={allowDraw}
-                  onChange={(e) => setAllowDraw(e.target.checked)}
-                  className="w-5 h-5"
-                />
+                <input type="checkbox" checked={allowDraw} onChange={(e) => setAllowDraw(e.target.checked)} className="w-5 h-5" />
                 <span>引き分けあり</span>
               </label>
               <p className="text-sm text-gray-500 mt-1 ml-7">
@@ -449,29 +399,18 @@ export default function LeagueApp() {
             <div>
               <h2 className="font-bold mb-2">3. 表示設定</h2>
               <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={showOrder}
-                  onChange={(e) => setShowOrder(e.target.checked)}
-                  className="w-5 h-5"
-                />
+                <input type="checkbox" checked={showOrder} onChange={(e) => setShowOrder(e.target.checked)} className="w-5 h-5" />
                 <span>対戦順（スケジュール）を表示する</span>
               </label>
               <p className="text-sm text-gray-500 mt-1 ml-7">総当たり表に試合番号を表示し、進行リストを作成します。</p>
             </div>
 
-            <button
-              onClick={() => setPhase("register")}
-              className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700"
-            >
+            <button onClick={() => setPhase("register")} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700">
               次へ：参加者登録
             </button>
 
             <div className="flex justify-end pt-8">
-              <button
-                onClick={resetData}
-                className="text-xs text-gray-300 hover:text-red-500 transition-colors"
-              >
+              <button onClick={resetData} className="text-xs text-gray-300 hover:text-red-500 transition-colors">
                 データをリセット
               </button>
             </div>
@@ -516,10 +455,7 @@ export default function LeagueApp() {
             </ul>
 
             {players.length >= 2 && (
-              <button
-                onClick={() => setPhase("match")}
-                className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700"
-              >
+              <button onClick={() => setPhase("match")} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700">
                 対戦開始！
               </button>
             )}
@@ -542,7 +478,6 @@ export default function LeagueApp() {
               </div>
             </div>
 
-            {/* ★画像化のonCloneで識別しやすいように data 属性を付与 */}
             <div ref={tableRef} data-league-capture="root" className="p-4 bg-white">
               <h2 className="text-center font-bold text-2xl mb-4 break-words">{title}</h2>
 
@@ -666,9 +601,8 @@ export default function LeagueApp() {
 
                       let resultStr = "vs";
                       if (isFinished && res) {
-                        if (mode === "score") {
-                          resultStr = `${res.scoreA} - ${res.scoreB}`;
-                        } else {
+                        if (mode === "score") resultStr = `${res.scoreA} - ${res.scoreB}`;
+                        else {
                           const resA = res.scoreA === 1 ? "○" : res.scoreA === 0.5 ? "△" : "●";
                           const resB = res.scoreB === 1 ? "○" : res.scoreB === 0.5 ? "△" : "●";
                           resultStr = `${resA} - ${resB}`;
