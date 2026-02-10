@@ -21,6 +21,8 @@ export default function LeagueApp() {
   const [title, setTitle] = useState("第◯回 〇〇大会 ◯ブロック");
   const [mode, setMode] = useState<GameMode>("score");
   const [allowDraw, setAllowDraw] = useState(true);
+
+  // 対戦順表示
   const [showOrder, setShowOrder] = useState(false);
 
   const [players, setPlayers] = useState<Player[]>([]);
@@ -83,6 +85,7 @@ export default function LeagueApp() {
     setNewName("");
   };
 
+  // ★プレイヤー削除時に matches の残骸も掃除
   const removePlayer = (id: string) => {
     setPlayers((prev) => prev.filter((p) => p.id !== id));
 
@@ -235,6 +238,7 @@ export default function LeagueApp() {
 
     const fixed = ps[0];
     const rotating = ps.slice(1);
+
     let matchCount = 1;
 
     for (let r = 0; r < rounds; r++) {
@@ -264,34 +268,43 @@ export default function LeagueApp() {
     return map;
   }, [schedule]);
 
-  // ★主目的：ズーム/スマホでも見切れない画像出力
-  // 方針：表示中DOMを直接撮らず、「画像出力用のクローンDOM」を画面外に作ってそれを撮る
+  // ★ズーム/スマホでも見切れない & 白画像を避ける版
   const saveImage = async () => {
     if (!tableRef.current) return;
 
     const root = tableRef.current;
 
-    // 元のテーブルの「本当の横幅」
+    // 画像化したい「本当の幅」
     const srcTable = root.querySelector("table") as HTMLTableElement | null;
     const tableFullWidth = srcTable ? srcTable.scrollWidth : root.scrollWidth;
 
-    // 余白込みで少し広げる
+    // 少し余白
     const targetWidth = Math.max(root.scrollWidth, tableFullWidth) + 40;
 
-    // 1) 出力用クローンを作る（ここがズーム耐性の肝）
-    const exportNode = root.cloneNode(true) as HTMLDivElement;
+    // 出力用クローン（画面内に置くが透明にする：display:none は描画されず真っ白になり得る）
+    const exportWrapper = document.createElement("div");
+    exportWrapper.style.position = "fixed";
+    exportWrapper.style.left = "0";
+    exportWrapper.style.top = "0";
+    exportWrapper.style.opacity = "0";
+    exportWrapper.style.pointerEvents = "none";
+    exportWrapper.style.zIndex = "-1";
+    exportWrapper.style.background = "#ffffff";
 
-    // 2) 画面外に配置（表示はしないが、レイアウト計算はさせる）
-    exportNode.style.position = "fixed";
-    exportNode.style.left = "-100000px";
-    exportNode.style.top = "0";
-    exportNode.style.background = "#ffffff";
+    const exportNode = root.cloneNode(true) as HTMLDivElement;
     exportNode.style.width = `${targetWidth}px`;
     exportNode.style.maxWidth = "none";
-    exportNode.style.transform = "none";
-    exportNode.style.pointerEvents = "none";
+    exportNode.style.background = "#ffffff";
 
-    // 3) 横スクロール容器を無効化（画像では “全部見える” 状態にする）
+    // クローン内の input 値を attribute に焼き込む（環境によって値が描画されない対策）
+    const inputs = exportNode.querySelectorAll("input");
+    inputs.forEach((el) => {
+      const input = el as HTMLInputElement;
+      if (input.type === "checkbox" || input.type === "radio") return;
+      input.setAttribute("value", input.value ?? "");
+    });
+
+    // 横スクロール容器を「スクロール無し」にする
     const wrappers = exportNode.querySelectorAll(".overflow-x-auto");
     wrappers.forEach((el) => {
       const div = el as HTMLDivElement;
@@ -301,25 +314,29 @@ export default function LeagueApp() {
       div.style.width = `${targetWidth}px`;
     });
 
-    // 4) テーブル幅を scrollWidth に固定（w-full だと親幅に吸われることがある）
+    // テーブル幅を固定（w-full による親幅吸収を抑える）
     const tables = exportNode.querySelectorAll("table");
     tables.forEach((t) => {
       const tbl = t as HTMLTableElement;
-      // 総当たり表だけ広げたいが、複数あるので全部に安全側設定
       tbl.style.width = `${Math.max(tableFullWidth, targetWidth - 40)}px`;
       tbl.style.maxWidth = "none";
       tbl.style.tableLayout = "auto";
     });
 
-    document.body.appendChild(exportNode);
+    exportWrapper.appendChild(exportNode);
+    document.body.appendChild(exportWrapper);
 
     try {
-      // レイアウト確定を待つ（これを入れないと幅が反映されない環境がある）
+      // フォント読み込み待ち（ある環境での白/欠落対策）
+      const fontsAny = (document as any).fonts;
+      if (fontsAny?.ready) await fontsAny.ready;
+
+      // レイアウト確定を1フレーム待つ
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
       const exportHeight = exportNode.scrollHeight + 20;
 
-      // Optionsの型問題があるので toPng を any で呼ぶ（構文事故も避けられる）
+      // Options 型が合わないので toPng を any 呼び出し（ビルド事故回避）
       const dataUrl: string = await (toPng as any)(exportNode, {
         cacheBust: true,
         backgroundColor: "#ffffff",
@@ -342,7 +359,7 @@ export default function LeagueApp() {
       console.error(err);
       alert("画像保存に失敗しました（端末やブラウザによって制限がある場合があります）");
     } finally {
-      exportNode.remove();
+      exportWrapper.remove();
     }
   };
 
@@ -413,7 +430,12 @@ export default function LeagueApp() {
             <div>
               <h2 className="font-bold mb-2">2. 引き分け</h2>
               <label className="flex items-center gap-2">
-                <input type="checkbox" checked={allowDraw} onChange={(e) => setAllowDraw(e.target.checked)} className="w-5 h-5" />
+                <input
+                  type="checkbox"
+                  checked={allowDraw}
+                  onChange={(e) => setAllowDraw(e.target.checked)}
+                  className="w-5 h-5"
+                />
                 <span>引き分けあり</span>
               </label>
               <p className="text-sm text-gray-500 mt-1 ml-7">
@@ -424,13 +446,23 @@ export default function LeagueApp() {
             <div>
               <h2 className="font-bold mb-2">3. 表示設定</h2>
               <label className="flex items-center gap-2">
-                <input type="checkbox" checked={showOrder} onChange={(e) => setShowOrder(e.target.checked)} className="w-5 h-5" />
+                <input
+                  type="checkbox"
+                  checked={showOrder}
+                  onChange={(e) => setShowOrder(e.target.checked)}
+                  className="w-5 h-5"
+                />
                 <span>対戦順（スケジュール）を表示する</span>
               </label>
-              <p className="text-sm text-gray-500 mt-1 ml-7">総当たり表に試合番号を表示し、進行リストを作成します。</p>
+              <p className="text-sm text-gray-500 mt-1 ml-7">
+                総当たり表に試合番号を表示し、進行リストを作成します。
+              </p>
             </div>
 
-            <button onClick={() => setPhase("register")} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700">
+            <button
+              onClick={() => setPhase("register")}
+              className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700"
+            >
               次へ：参加者登録
             </button>
 
@@ -480,7 +512,10 @@ export default function LeagueApp() {
             </ul>
 
             {players.length >= 2 && (
-              <button onClick={() => setPhase("match")} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700">
+              <button
+                onClick={() => setPhase("match")}
+                className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700"
+              >
                 対戦開始！
               </button>
             )}
@@ -564,7 +599,9 @@ export default function LeagueApp() {
                                       step={1}
                                       className="w-10 border text-center p-1 rounded"
                                       value={oppScore ?? ""}
-                                      onChange={(e) => updateMatchScore(p1.id, p2.id, false, e.target.value, isReversed)}
+                                      onChange={(e) =>
+                                        updateMatchScore(p1.id, p2.id, false, e.target.value, isReversed)
+                                      }
                                     />
                                   </div>
                                 ) : (
