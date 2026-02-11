@@ -12,6 +12,11 @@ type MatchKey = string;
 const STORAGE_KEY = "league-app-data";
 const DUMMY_ID = "dummy";
 
+// 勝点（一般的）
+const POINTS_WIN = 3;
+const POINTS_DRAW = 1;
+const POINTS_LOSS = 0;
+
 type ScheduledMatch = {
   no: number | null; // 実試合のみ番号を振る（BYEはnull）
   p1: Player;
@@ -22,6 +27,17 @@ type ScheduledMatch = {
 type RoundSchedule = {
   roundNo: number; // 1戦目,2戦目...
   matches: ScheduledMatch[]; // 実試合 + BYE
+};
+
+type Stats = Player & {
+  played: number;
+  points: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  goalsFor: number;     // score のみ意味あり
+  goalsAgainst: number; // score のみ意味あり
+  goalDiff: number;     // score のみ意味あり
 };
 
 export default function LeagueApp() {
@@ -131,7 +147,7 @@ export default function LeagueApp() {
     });
   };
 
-  // ★重要：試合結果取得を共通化（スケジュールの #4 不反映の根本原因を潰す）
+  // ★重要：試合結果取得を共通化（p1-p2 / p2-p1 両対応）
   // 戻り値は「p1視点」に正規化：{ a: p1の値, b: p2の値 }
   const getMatchAB = useCallback(
     (p1Id: string, p2Id: string): { a: number | null; b: number | null } | null => {
@@ -142,80 +158,165 @@ export default function LeagueApp() {
       if (m12) return { a: m12.scoreA, b: m12.scoreB };
 
       const m21 = matches[key21];
-      if (m21) return { a: m21.scoreB, b: m21.scoreA }; // 逆向き保存は入れ替える
+      if (m21) return { a: m21.scoreB, b: m21.scoreA };
 
       return null;
     },
     [matches]
   );
 
-  const isFinishedMatch = useCallback(
+  // ★試合が「確定」と言えるか（allowDraw=false 時の同点は未確定扱い）
+  const isConfirmed = useCallback(
     (p1Id: string, p2Id: string) => {
       const ab = getMatchAB(p1Id, p2Id);
-      return !!ab && ab.a !== null && ab.b !== null;
-    },
-    [getMatchAB]
-  );
+      if (!ab) return false;
+      if (ab.a === null || ab.b === null) return false;
 
-  // --- 集計 ---
-  const calculateStats = useCallback(() => {
-    const stats = players.map((player) => {
-      let wins = 0,
-        losses = 0,
-        draws = 0,
-        goalsFor = 0,
-        goalsAgainst = 0;
-
-      players.forEach((opponent) => {
-        if (player.id === opponent.id) return;
-
-        const ab = getMatchAB(player.id, opponent.id);
-        if (!ab) return;
-
-        const sA = ab.a;
-        const sB = ab.b;
-
-        if (sA === null || sB === null) return;
-        if (!Number.isFinite(sA) || !Number.isFinite(sB)) return;
-
-        if (mode === "score") {
-          goalsFor += sA;
-          goalsAgainst += sB;
-
-          if (sA > sB) wins++;
-          else if (sA < sB) losses++;
-          else draws++;
-        } else {
-          if (sA === 1) wins++;
-          else if (sA === 0.5) draws++;
-          else if (sA === 0) losses++;
-        }
-      });
-
-      return { ...player, wins, losses, draws, goalsFor, goalsAgainst, goalDiff: goalsFor - goalsAgainst };
-    });
-
-    return stats.sort((a, b) => {
-      if (a.wins !== b.wins) return b.wins - a.wins;
-      if (mode === "score" && a.losses !== b.losses) return a.losses - b.losses;
-
-      // 直接対決
-      const ab = getMatchAB(a.id, b.id);
-      if (ab && ab.a !== null && ab.b !== null) {
-        if (mode === "score") {
-          if (ab.a > ab.b) return -1;
-          if (ab.a < ab.b) return 1;
-        } else {
-          if (ab.a === 1) return -1;
-          if (ab.a === 0) return 1;
-        }
+      if (mode === "score") {
+        // 引き分け禁止なら同点は未確定
+        if (!allowDraw && ab.a === ab.b) return false;
+        return true;
       }
 
-      if (mode === "score" && a.goalDiff !== b.goalDiff) return b.goalDiff - a.goalDiff;
-      if (mode === "score" && a.goalsFor !== b.goalsFor) return b.goalsFor - a.goalsFor;
+      // win-loss は 1/0.5/0 の前提。allowDraw=false ならUIで0.5が入らない想定だが、
+      // 保存データに残っていたら未確定扱いにしておく。
+      if (!allowDraw && ab.a === 0.5) return false;
+      return true;
+    },
+    [getMatchAB, mode, allowDraw]
+  );
+
+  // ★勝点計算（p1視点）
+  const calcPointsForP1 = useCallback(
+    (a: number, b: number): number => {
+      if (mode === "score") {
+        if (a > b) return POINTS_WIN;
+        if (a < b) return POINTS_LOSS;
+        // 同点
+        return allowDraw ? POINTS_DRAW : 0; // allowDraw=false なら本来ここに来ない（未確定扱い）
+      } else {
+        // win-loss：a=1(勝),0.5(分),0(負)
+        if (a === 1) return POINTS_WIN;
+        if (a === 0.5) return allowDraw ? POINTS_DRAW : 0;
+        return POINTS_LOSS;
+      }
+    },
+    [mode, allowDraw]
+  );
+
+  // ★一般的な順位用：直接対決（勝点）で比較
+  const headToHeadCompare = useCallback(
+    (aId: string, bId: string): number => {
+      if (!isConfirmed(aId, bId)) return 0;
+
+      const ab = getMatchAB(aId, bId);
+      if (!ab || ab.a === null || ab.b === null) return 0;
+
+      const pA = calcPointsForP1(ab.a, ab.b);
+      const pB = calcPointsForP1(ab.b, ab.a); // 反転してBの勝点
+      if (pA !== pB) return pB - pA; // 降順にしたいので「b - a」じゃなく比較用に返す
       return 0;
+    },
+    [getMatchAB, isConfirmed, calcPointsForP1]
+  );
+
+  // --- 集計（一般的：勝点ベース） ---
+  const calculateStats = useCallback((): Stats[] => {
+    const stats: Stats[] = players.map((p) => ({
+      ...p,
+      played: 0,
+      points: 0,
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      goalsFor: 0,
+      goalsAgainst: 0,
+      goalDiff: 0,
+    }));
+
+    const idx = new Map<string, number>();
+    stats.forEach((p, i) => idx.set(p.id, i));
+
+    // 全組み合わせを走査（重複計算を避ける）
+    for (let i = 0; i < players.length; i++) {
+      for (let j = i + 1; j < players.length; j++) {
+        const A = players[i];
+        const B = players[j];
+
+        if (!isConfirmed(A.id, B.id)) continue;
+
+        const ab = getMatchAB(A.id, B.id);
+        if (!ab || ab.a === null || ab.b === null) continue;
+
+        const a = ab.a;
+        const b = ab.b;
+
+        const ai = idx.get(A.id)!;
+        const bi = idx.get(B.id)!;
+
+        stats[ai].played += 1;
+        stats[bi].played += 1;
+
+        // 勝敗・勝点
+        const pA = calcPointsForP1(a, b);
+        const pB = calcPointsForP1(b, a);
+        stats[ai].points += pA;
+        stats[bi].points += pB;
+
+        if (pA === POINTS_WIN) {
+          stats[ai].wins += 1;
+          stats[bi].losses += 1;
+        } else if (pA === POINTS_DRAW) {
+          stats[ai].draws += 1;
+          stats[bi].draws += 1;
+        } else {
+          stats[ai].losses += 1;
+          stats[bi].wins += 1;
+        }
+
+        // score方式なら得点も反映
+        if (mode === "score") {
+          stats[ai].goalsFor += a;
+          stats[ai].goalsAgainst += b;
+          stats[bi].goalsFor += b;
+          stats[bi].goalsAgainst += a;
+        }
+      }
+    }
+
+    // 差分を更新
+    stats.forEach((p) => {
+      p.goalDiff = p.goalsFor - p.goalsAgainst;
     });
-  }, [players, mode, getMatchAB]);
+
+    // 並べ替え（一般的な優先順）
+    stats.sort((A, B) => {
+      // 1) 勝点
+      if (A.points !== B.points) return B.points - A.points;
+
+      // 2) 直接対決（勝点）
+      const h2h = headToHeadCompare(A.id, B.id);
+      if (h2h !== 0) return h2h;
+
+      if (mode === "score") {
+        // 3) 得失点差
+        if (A.goalDiff !== B.goalDiff) return B.goalDiff - A.goalDiff;
+        // 4) 総得点
+        if (A.goalsFor !== B.goalsFor) return B.goalsFor - A.goalsFor;
+        // 5) 勝数（最後の最後）
+        if (A.wins !== B.wins) return B.wins - A.wins;
+      } else {
+        // win-loss は得点が無いので勝数・敗数
+        if (A.wins !== B.wins) return B.wins - A.wins;
+        if (A.losses !== B.losses) return A.losses - B.losses; // 負けが少ない方が上
+      }
+
+      // 最後：名前（安定ソート）
+      return A.name.localeCompare(B.name, "ja");
+    });
+
+    return stats;
+  }, [players, mode, isConfirmed, getMatchAB, calcPointsForP1, headToHeadCompare]);
 
   const rankedPlayers = useMemo(() => calculateStats(), [calculateStats]);
 
@@ -229,8 +330,7 @@ export default function LeagueApp() {
     if (players.length < 2) return [];
 
     const ps = [...players];
-    const hasDummy = ps.length % 2 !== 0;
-    if (hasDummy) ps.push({ id: DUMMY_ID, name: "休み" });
+    if (ps.length % 2 !== 0) ps.push({ id: DUMMY_ID, name: "休み" });
 
     const n = ps.length;
     const rounds = n - 1;
@@ -239,15 +339,13 @@ export default function LeagueApp() {
     const fixed = ps[0];
     const rotating = ps.slice(1);
 
-    let matchCount = 1; // 実試合のみ番号を振る
-
+    let matchCount = 1;
     const result: RoundSchedule[] = [];
 
     for (let r = 0; r < rounds; r++) {
       const roundNo = r + 1;
       const matchesInRound: ScheduledMatch[] = [];
 
-      // 1) fixed vs last
       {
         const pA = fixed;
         const pB = rotating[rotating.length - 1];
@@ -256,7 +354,6 @@ export default function LeagueApp() {
         matchesInRound.push({ no, p1: pA, p2: pB, isBye });
       }
 
-      // 2) remaining pairs
       for (let i = 0; i < half - 1; i++) {
         const p1 = rotating[i];
         const p2 = rotating[rotating.length - 2 - i];
@@ -265,7 +362,7 @@ export default function LeagueApp() {
         matchesInRound.push({ no, p1, p2, isBye });
       }
 
-      // BYEは「休み: ◯◯」にしたいので、dummy側を後ろに寄せておく（表示が安定）
+      // BYEは dummy を後ろへ
       matchesInRound.forEach((m) => {
         if (!m.isBye) return;
         if (m.p1.id === DUMMY_ID && m.p2.id !== DUMMY_ID) {
@@ -275,13 +372,11 @@ export default function LeagueApp() {
         }
       });
 
-      // 実試合だけ先に並べて、最後に休み表示（見やすい）
       const realMatches = matchesInRound.filter((m) => !m.isBye);
       const byes = matchesInRound.filter((m) => m.isBye);
 
       result.push({ roundNo, matches: [...realMatches, ...byes] });
 
-      // rotate
       const last = rotating.pop();
       if (last) rotating.unshift(last);
     }
@@ -289,7 +384,6 @@ export default function LeagueApp() {
     return result;
   }, [players]);
 
-  // マトリクスの試合番号表示用（実試合のみ）
   const matchOrderMap = useMemo(() => {
     const map: Record<string, number> = {};
     roundSchedule.forEach((round) => {
@@ -302,7 +396,7 @@ export default function LeagueApp() {
     return map;
   }, [roundSchedule]);
 
-  // ★画像出力（あなたの環境で動いた版を維持）
+  // ★画像出力（完成版を維持）
   const saveImage = async () => {
     if (!tableRef.current) return;
 
@@ -391,7 +485,7 @@ export default function LeagueApp() {
     rankedPlayers.forEach((p, i) => {
       const rank = i + 1;
       const icon = rank === 1 && hasMatches ? "👑 " : "";
-      let line = `${rank}位: ${icon}${p.name} / ${p.wins}勝${p.losses}敗`;
+      let line = `${rank}位: ${icon}${p.name} / 勝点${p.points} / ${p.wins}勝${p.losses}敗`;
       if (allowDraw) line += `${p.draws}分`;
       if (mode === "score") line += ` (得失点:${p.goalDiff > 0 ? "+" : ""}${p.goalDiff})`;
       text += line + "\n";
@@ -462,7 +556,7 @@ export default function LeagueApp() {
                 <span>引き分けあり</span>
               </label>
               <p className="text-sm text-gray-500 mt-1 ml-7">
-                ※無料版では主に「勝敗のみ」モードの△ボタンに反映します（スコア入力は同点が入り得ます）。
+                ※引き分けなしの場合、scoreモードで同点入力の試合は「未確定扱い」（順位に反映しません）。
               </p>
             </div>
 
@@ -646,7 +740,7 @@ export default function LeagueApp() {
                                             ? "bg-green-500 text-white border-green-600 scale-110 shadow-md"
                                             : "bg-gray-100 text-gray-400 hover:bg-gray-200"
                                         }`}
-                                    >
+                                      >
                                         △
                                       </button>
                                     )}
@@ -673,7 +767,6 @@ export default function LeagueApp() {
                 </table>
               </div>
 
-              {/* ★ここを要件どおり改修：ラウンド単位表示 + 奇数時は休み表示 + 結果は両向きキー対応 */}
               {showOrder && (
                 <div className="mb-8 p-4 bg-gray-50 rounded border">
                   <h3 className="font-bold text-lg mb-3">試合スケジュール</h3>
@@ -686,7 +779,6 @@ export default function LeagueApp() {
                         <div className="space-y-2 text-sm">
                           {round.matches.map((m, idx) => {
                             if (m.isBye) {
-                              // dummy は m.p2 側に寄せてある
                               const restPlayer = m.p1;
                               return (
                                 <div
@@ -699,27 +791,30 @@ export default function LeagueApp() {
                               );
                             }
 
-                            // 実試合
                             const p1 = m.p1;
                             const p2 = m.p2;
+
                             const ab = getMatchAB(p1.id, p2.id);
-                            const finished = ab && ab.a !== null && ab.b !== null;
+                            const confirmed = isConfirmed(p1.id, p2.id);
 
                             let resultStr = "vs";
-                            if (finished && ab) {
+                            if (confirmed && ab && ab.a !== null && ab.b !== null) {
                               if (mode === "score") {
                                 resultStr = `${ab.a} - ${ab.b}`;
                               } else {
-                                const toMark = (x: number | null) => (x === 1 ? "○" : x === 0.5 ? "△" : "●");
+                                const toMark = (x: number) => (x === 1 ? "○" : x === 0.5 ? "△" : "●");
                                 resultStr = `${toMark(ab.a)} - ${toMark(ab.b)}`;
                               }
+                            } else if (ab && ab.a !== null && ab.b !== null && mode === "score" && !allowDraw && ab.a === ab.b) {
+                              // 引き分け禁止で同点が入っている場合：未確定の注意表示
+                              resultStr = "同点（未確定）";
                             }
 
                             return (
                               <div
                                 key={`m-${round.roundNo}-${m.no ?? idx}`}
                                 className={`flex items-center gap-2 p-2 rounded ${
-                                  finished ? "bg-gray-200 text-gray-500" : "bg-white border"
+                                  confirmed ? "bg-gray-200 text-gray-500" : "bg-white border"
                                 }`}
                               >
                                 <span className="font-bold text-blue-600 w-16">{m.no ? `#${m.no}` : ""}</span>
@@ -742,6 +837,8 @@ export default function LeagueApp() {
                   <tr className="border-b-2 border-gray-400">
                     <th className="p-2">順位</th>
                     <th className="p-2">名前</th>
+                    <th className="p-2 text-center">試</th>
+                    <th className="p-2 text-center">勝点</th>
                     <th className="p-2 text-center">勝</th>
                     <th className="p-2 text-center">負</th>
                     {allowDraw && <th className="p-2 text-center">分</th>}
@@ -760,6 +857,8 @@ export default function LeagueApp() {
                       <td className="p-2">
                         {p.name} {i === 0 && hasMatches && "👑"}
                       </td>
+                      <td className="p-2 text-center">{p.played}</td>
+                      <td className="p-2 text-center">{p.points}</td>
                       <td className="p-2 text-center">{p.wins}</td>
                       <td className="p-2 text-center">{p.losses}</td>
                       {allowDraw && <td className="p-2 text-center">{p.draws}</td>}
