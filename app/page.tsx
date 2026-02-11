@@ -6,13 +6,23 @@ import { toPng } from "html-to-image";
 // --- 型定義 ---
 type GameMode = "score" | "win-loss";
 type Player = { id: string; name: string };
-type MatchResult = {
-  scoreA: number | null;
-  scoreB: number | null;
-};
+type MatchResult = { scoreA: number | null; scoreB: number | null };
 type MatchKey = string;
 
 const STORAGE_KEY = "league-app-data";
+const DUMMY_ID = "dummy";
+
+type ScheduledMatch = {
+  no: number | null; // 実試合のみ番号を振る（BYEはnull）
+  p1: Player;
+  p2: Player; // dummy の場合あり
+  isBye: boolean;
+};
+
+type RoundSchedule = {
+  roundNo: number; // 1戦目,2戦目...
+  matches: ScheduledMatch[]; // 実試合 + BYE
+};
 
 export default function LeagueApp() {
   // --- 状態管理 ---
@@ -21,8 +31,6 @@ export default function LeagueApp() {
   const [title, setTitle] = useState("第◯回 〇〇大会 ◯ブロック");
   const [mode, setMode] = useState<GameMode>("score");
   const [allowDraw, setAllowDraw] = useState(true);
-
-  // 対戦順表示
   const [showOrder, setShowOrder] = useState(false);
 
   const [players, setPlayers] = useState<Player[]>([]);
@@ -85,7 +93,7 @@ export default function LeagueApp() {
     setNewName("");
   };
 
-  // ★プレイヤー削除時に matches の残骸も掃除
+  // プレイヤー削除時に matches の残骸も掃除
   const removePlayer = (id: string) => {
     setPlayers((prev) => prev.filter((p) => p.id !== id));
 
@@ -100,26 +108,14 @@ export default function LeagueApp() {
     });
   };
 
-  const updateMatchWinLoss = (
-    p1: string,
-    p2: string,
-    myScore: number,
-    oppScore: number,
-    isReversed: boolean
-  ) => {
+  const updateMatchWinLoss = (p1: string, p2: string, myScore: number, oppScore: number, isReversed: boolean) => {
     const key = `${p1}-${p2}`;
     const scoreA = isReversed ? oppScore : myScore;
     const scoreB = isReversed ? myScore : oppScore;
     setMatches((prev) => ({ ...prev, [key]: { scoreA, scoreB } }));
   };
 
-  const updateMatchScore = (
-    p1: string,
-    p2: string,
-    isMyScore: boolean,
-    value: string,
-    isReversed: boolean
-  ) => {
+  const updateMatchScore = (p1: string, p2: string, isMyScore: boolean, value: string, isReversed: boolean) => {
     const key = `${p1}-${p2}`;
     const val = parseScore(value);
 
@@ -135,6 +131,32 @@ export default function LeagueApp() {
     });
   };
 
+  // ★重要：試合結果取得を共通化（スケジュールの #4 不反映の根本原因を潰す）
+  // 戻り値は「p1視点」に正規化：{ a: p1の値, b: p2の値 }
+  const getMatchAB = useCallback(
+    (p1Id: string, p2Id: string): { a: number | null; b: number | null } | null => {
+      const key12 = `${p1Id}-${p2Id}`;
+      const key21 = `${p2Id}-${p1Id}`;
+
+      const m12 = matches[key12];
+      if (m12) return { a: m12.scoreA, b: m12.scoreB };
+
+      const m21 = matches[key21];
+      if (m21) return { a: m21.scoreB, b: m21.scoreA }; // 逆向き保存は入れ替える
+
+      return null;
+    },
+    [matches]
+  );
+
+  const isFinishedMatch = useCallback(
+    (p1Id: string, p2Id: string) => {
+      const ab = getMatchAB(p1Id, p2Id);
+      return !!ab && ab.a !== null && ab.b !== null;
+    },
+    [getMatchAB]
+  );
+
   // --- 集計 ---
   const calculateStats = useCallback(() => {
     const stats = players.map((player) => {
@@ -147,19 +169,11 @@ export default function LeagueApp() {
       players.forEach((opponent) => {
         if (player.id === opponent.id) return;
 
-        const key1 = `${player.id}-${opponent.id}`;
-        const key2 = `${opponent.id}-${player.id}`;
+        const ab = getMatchAB(player.id, opponent.id);
+        if (!ab) return;
 
-        let sA: number | null = null;
-        let sB: number | null = null;
-
-        if (matches[key1]) {
-          sA = matches[key1].scoreA;
-          sB = matches[key1].scoreB;
-        } else if (matches[key2]) {
-          sA = matches[key2].scoreB;
-          sB = matches[key2].scoreA;
-        }
+        const sA = ab.a;
+        const sB = ab.b;
 
         if (sA === null || sB === null) return;
         if (!Number.isFinite(sA) || !Number.isFinite(sB)) return;
@@ -185,29 +199,15 @@ export default function LeagueApp() {
       if (a.wins !== b.wins) return b.wins - a.wins;
       if (mode === "score" && a.losses !== b.losses) return a.losses - b.losses;
 
-      const keyAB = `${a.id}-${b.id}`;
-      const keyBA = `${b.id}-${a.id}`;
-      const mAB = matches[keyAB];
-      const mBA = matches[keyBA];
-
-      if (mAB && mAB.scoreA !== null && mAB.scoreB !== null) {
+      // 直接対決
+      const ab = getMatchAB(a.id, b.id);
+      if (ab && ab.a !== null && ab.b !== null) {
         if (mode === "score") {
-          if (mAB.scoreA > mAB.scoreB) return -1;
-          if (mAB.scoreA < mAB.scoreB) return 1;
+          if (ab.a > ab.b) return -1;
+          if (ab.a < ab.b) return 1;
         } else {
-          if (mAB.scoreA === 1) return -1;
-          if (mAB.scoreA === 0) return 1;
-        }
-      } else if (mBA && mBA.scoreA !== null && mBA.scoreB !== null) {
-        if (mode === "score") {
-          const aScore = mBA.scoreB;
-          const bScore = mBA.scoreA;
-          if (aScore > bScore) return -1;
-          if (aScore < bScore) return 1;
-        } else {
-          const aRes = mBA.scoreB;
-          if (aRes === 1) return -1;
-          if (aRes === 0) return 1;
+          if (ab.a === 1) return -1;
+          if (ab.a === 0) return 1;
         }
       }
 
@@ -215,7 +215,7 @@ export default function LeagueApp() {
       if (mode === "score" && a.goalsFor !== b.goalsFor) return b.goalsFor - a.goalsFor;
       return 0;
     });
-  }, [players, matches, mode]);
+  }, [players, mode, getMatchAB]);
 
   const rankedPlayers = useMemo(() => calculateStats(), [calculateStats]);
 
@@ -224,64 +224,94 @@ export default function LeagueApp() {
     [matches]
   );
 
-  // --- 対戦スケジュール生成（サークル法） ---
-  const schedule = useMemo(() => {
+  // --- 対戦スケジュール生成（サークル法 / ラウンド単位） ---
+  const roundSchedule: RoundSchedule[] = useMemo(() => {
     if (players.length < 2) return [];
 
     const ps = [...players];
-    if (ps.length % 2 !== 0) ps.push({ id: "dummy", name: "休み" });
+    const hasDummy = ps.length % 2 !== 0;
+    if (hasDummy) ps.push({ id: DUMMY_ID, name: "休み" });
 
     const n = ps.length;
     const rounds = n - 1;
     const half = n / 2;
-    const matchesList: { no: number; p1: Player; p2: Player }[] = [];
 
     const fixed = ps[0];
     const rotating = ps.slice(1);
 
-    let matchCount = 1;
+    let matchCount = 1; // 実試合のみ番号を振る
+
+    const result: RoundSchedule[] = [];
 
     for (let r = 0; r < rounds; r++) {
-      const pA = fixed;
-      const pB = rotating[rotating.length - 1];
-      if (pA.id !== "dummy" && pB.id !== "dummy") matchesList.push({ no: matchCount++, p1: pA, p2: pB });
+      const roundNo = r + 1;
+      const matchesInRound: ScheduledMatch[] = [];
 
+      // 1) fixed vs last
+      {
+        const pA = fixed;
+        const pB = rotating[rotating.length - 1];
+        const isBye = pA.id === DUMMY_ID || pB.id === DUMMY_ID;
+        const no = isBye ? null : matchCount++;
+        matchesInRound.push({ no, p1: pA, p2: pB, isBye });
+      }
+
+      // 2) remaining pairs
       for (let i = 0; i < half - 1; i++) {
         const p1 = rotating[i];
         const p2 = rotating[rotating.length - 2 - i];
-        if (p1.id !== "dummy" && p2.id !== "dummy") matchesList.push({ no: matchCount++, p1, p2 });
+        const isBye = p1.id === DUMMY_ID || p2.id === DUMMY_ID;
+        const no = isBye ? null : matchCount++;
+        matchesInRound.push({ no, p1, p2, isBye });
       }
 
+      // BYEは「休み: ◯◯」にしたいので、dummy側を後ろに寄せておく（表示が安定）
+      matchesInRound.forEach((m) => {
+        if (!m.isBye) return;
+        if (m.p1.id === DUMMY_ID && m.p2.id !== DUMMY_ID) {
+          const tmp = m.p1;
+          m.p1 = m.p2;
+          m.p2 = tmp;
+        }
+      });
+
+      // 実試合だけ先に並べて、最後に休み表示（見やすい）
+      const realMatches = matchesInRound.filter((m) => !m.isBye);
+      const byes = matchesInRound.filter((m) => m.isBye);
+
+      result.push({ roundNo, matches: [...realMatches, ...byes] });
+
+      // rotate
       const last = rotating.pop();
       if (last) rotating.unshift(last);
     }
 
-    return matchesList;
+    return result;
   }, [players]);
 
+  // マトリクスの試合番号表示用（実試合のみ）
   const matchOrderMap = useMemo(() => {
     const map: Record<string, number> = {};
-    schedule.forEach((m) => {
-      map[`${m.p1.id}-${m.p2.id}`] = m.no;
-      map[`${m.p2.id}-${m.p1.id}`] = m.no;
+    roundSchedule.forEach((round) => {
+      round.matches.forEach((m) => {
+        if (m.isBye || m.no === null) return;
+        map[`${m.p1.id}-${m.p2.id}`] = m.no;
+        map[`${m.p2.id}-${m.p1.id}`] = m.no;
+      });
     });
     return map;
-  }, [schedule]);
+  }, [roundSchedule]);
 
-  // ★ズーム/スマホでも見切れない & 白画像を避ける版
+  // ★画像出力（あなたの環境で動いた版を維持）
   const saveImage = async () => {
     if (!tableRef.current) return;
 
     const root = tableRef.current;
 
-    // 画像化したい「本当の幅」
     const srcTable = root.querySelector("table") as HTMLTableElement | null;
     const tableFullWidth = srcTable ? srcTable.scrollWidth : root.scrollWidth;
-
-    // 少し余白
     const targetWidth = Math.max(root.scrollWidth, tableFullWidth) + 40;
 
-    // 出力用クローン（画面内に置くが透明にする：display:none は描画されず真っ白になり得る）
     const exportWrapper = document.createElement("div");
     exportWrapper.style.position = "fixed";
     exportWrapper.style.left = "0";
@@ -296,7 +326,6 @@ export default function LeagueApp() {
     exportNode.style.maxWidth = "none";
     exportNode.style.background = "#ffffff";
 
-    // クローン内の input 値を attribute に焼き込む（環境によって値が描画されない対策）
     const inputs = exportNode.querySelectorAll("input");
     inputs.forEach((el) => {
       const input = el as HTMLInputElement;
@@ -304,7 +333,6 @@ export default function LeagueApp() {
       input.setAttribute("value", input.value ?? "");
     });
 
-    // 横スクロール容器を「スクロール無し」にする
     const wrappers = exportNode.querySelectorAll(".overflow-x-auto");
     wrappers.forEach((el) => {
       const div = el as HTMLDivElement;
@@ -314,7 +342,6 @@ export default function LeagueApp() {
       div.style.width = `${targetWidth}px`;
     });
 
-    // テーブル幅を固定（w-full による親幅吸収を抑える）
     const tables = exportNode.querySelectorAll("table");
     tables.forEach((t) => {
       const tbl = t as HTMLTableElement;
@@ -327,16 +354,12 @@ export default function LeagueApp() {
     document.body.appendChild(exportWrapper);
 
     try {
-      // フォント読み込み待ち（ある環境での白/欠落対策）
       const fontsAny = (document as any).fonts;
       if (fontsAny?.ready) await fontsAny.ready;
-
-      // レイアウト確定を1フレーム待つ
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
       const exportHeight = exportNode.scrollHeight + 20;
 
-      // Options 型が合わないので toPng を any 呼び出し（ビルド事故回避）
       const dataUrl: string = await (toPng as any)(exportNode, {
         cacheBust: true,
         backgroundColor: "#ffffff",
@@ -455,7 +478,7 @@ export default function LeagueApp() {
                 <span>対戦順（スケジュール）を表示する</span>
               </label>
               <p className="text-sm text-gray-500 mt-1 ml-7">
-                総当たり表に試合番号を表示し、進行リストを作成します。
+                総当たり表に試合番号を表示し、下に「1戦目…」の進行リストを出します。奇数人数の場合は休みも表示します。
               </p>
             </div>
 
@@ -599,9 +622,7 @@ export default function LeagueApp() {
                                       step={1}
                                       className="w-10 border text-center p-1 rounded"
                                       value={oppScore ?? ""}
-                                      onChange={(e) =>
-                                        updateMatchScore(p1.id, p2.id, false, e.target.value, isReversed)
-                                      }
+                                      onChange={(e) => updateMatchScore(p1.id, p2.id, false, e.target.value, isReversed)}
                                     />
                                   </div>
                                 ) : (
@@ -625,7 +646,7 @@ export default function LeagueApp() {
                                             ? "bg-green-500 text-white border-green-600 scale-110 shadow-md"
                                             : "bg-gray-100 text-gray-400 hover:bg-gray-200"
                                         }`}
-                                      >
+                                    >
                                         △
                                       </button>
                                     )}
@@ -652,39 +673,65 @@ export default function LeagueApp() {
                 </table>
               </div>
 
+              {/* ★ここを要件どおり改修：ラウンド単位表示 + 奇数時は休み表示 + 結果は両向きキー対応 */}
               {showOrder && (
                 <div className="mb-8 p-4 bg-gray-50 rounded border">
-                  <h3 className="font-bold text-lg mb-2">試合スケジュール</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-                    {schedule.map((m) => {
-                      const key = `${m.p1.id}-${m.p2.id}`;
-                      const res = matches[key];
-                      const isFinished = res?.scoreA !== null && res?.scoreB !== null;
+                  <h3 className="font-bold text-lg mb-3">試合スケジュール</h3>
 
-                      let resultStr = "vs";
-                      if (isFinished && res) {
-                        if (mode === "score") resultStr = `${res.scoreA} - ${res.scoreB}`;
-                        else {
-                          const resA = res.scoreA === 1 ? "○" : res.scoreA === 0.5 ? "△" : "●";
-                          const resB = res.scoreB === 1 ? "○" : res.scoreB === 0.5 ? "△" : "●";
-                          resultStr = `${resA} - ${resB}`;
-                        }
-                      }
+                  <div className="space-y-4">
+                    {roundSchedule.map((round) => (
+                      <div key={round.roundNo} className="bg-white border rounded p-3">
+                        <div className="font-bold text-gray-700 mb-2">{round.roundNo}戦目</div>
 
-                      return (
-                        <div
-                          key={m.no}
-                          className={`flex items-center gap-2 p-2 rounded ${
-                            isFinished ? "bg-gray-200 text-gray-500" : "bg-white border"
-                          }`}
-                        >
-                          <span className="font-bold text-blue-600 w-8">#{m.no}</span>
-                          <span className="font-bold">{m.p1.name}</span>
-                          <span className="px-2 text-gray-500">{resultStr}</span>
-                          <span className="font-bold">{m.p2.name}</span>
+                        <div className="space-y-2 text-sm">
+                          {round.matches.map((m, idx) => {
+                            if (m.isBye) {
+                              // dummy は m.p2 側に寄せてある
+                              const restPlayer = m.p1;
+                              return (
+                                <div
+                                  key={`bye-${round.roundNo}-${idx}`}
+                                  className="flex items-center gap-2 p-2 rounded bg-yellow-50 border border-yellow-200"
+                                >
+                                  <span className="font-bold text-yellow-700 w-16">休み</span>
+                                  <span className="font-bold">{restPlayer.name}</span>
+                                </div>
+                              );
+                            }
+
+                            // 実試合
+                            const p1 = m.p1;
+                            const p2 = m.p2;
+                            const ab = getMatchAB(p1.id, p2.id);
+                            const finished = ab && ab.a !== null && ab.b !== null;
+
+                            let resultStr = "vs";
+                            if (finished && ab) {
+                              if (mode === "score") {
+                                resultStr = `${ab.a} - ${ab.b}`;
+                              } else {
+                                const toMark = (x: number | null) => (x === 1 ? "○" : x === 0.5 ? "△" : "●");
+                                resultStr = `${toMark(ab.a)} - ${toMark(ab.b)}`;
+                              }
+                            }
+
+                            return (
+                              <div
+                                key={`m-${round.roundNo}-${m.no ?? idx}`}
+                                className={`flex items-center gap-2 p-2 rounded ${
+                                  finished ? "bg-gray-200 text-gray-500" : "bg-white border"
+                                }`}
+                              >
+                                <span className="font-bold text-blue-600 w-16">{m.no ? `#${m.no}` : ""}</span>
+                                <span className="font-bold">{p1.name}</span>
+                                <span className="px-2 text-gray-500">{resultStr}</span>
+                                <span className="font-bold">{p2.name}</span>
+                              </div>
+                            );
+                          })}
                         </div>
-                      );
-                    })}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
